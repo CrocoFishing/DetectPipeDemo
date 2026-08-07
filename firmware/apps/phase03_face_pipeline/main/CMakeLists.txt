@@ -1,0 +1,1 @@
+idf_component_register(SRCS "app_main.cpp" REQUIRES camera_service face_detection image_processing board_support application_protocol freertos mbedtls)

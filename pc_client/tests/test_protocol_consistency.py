@@ -1,0 +1,45 @@
+from pathlib import Path
+
+import yaml
+
+from pc_client import protocol
+
+ROOT = Path(__file__).resolve().parents[2]
+
+
+def test_yaml_matches_python() -> None:
+    spec = yaml.safe_load((ROOT / "protocol/ble_protocol.yaml").read_text(encoding="utf-8"))
+    assert spec["protocol"]["version"] == protocol.VERSION
+    assert spec["protocol"]["magic"] == protocol.MAGIC
+    assert spec["protocol"]["header_length"] == protocol.HEADER_SIZE
+    actual_uuids = {
+        "service": protocol.SERVICE_UUID,
+        "control": protocol.CONTROL_UUID,
+        "event": protocol.EVENT_UUID,
+        "image_data": protocol.IMAGE_UUID,
+        "recognition_result": protocol.RESULT_UUID,
+        "device_information": protocol.DEVICE_INFO_UUID,
+    }
+    assert spec["uuids"] == actual_uuids
+    assert spec["message_types"] == {item.name: item.value for item in protocol.MessageType}
+    assert spec["error_codes"] == {item.name: item.value for item in protocol.ErrorCode}
+
+
+def test_cpp_and_swift_contain_protocol_constants() -> None:
+    spec = yaml.safe_load((ROOT / "protocol/ble_protocol.yaml").read_text(encoding="utf-8"))
+    cpp = (
+        (ROOT / "firmware/components/ble_transport/include/ble_transport.hpp")
+        .read_text(encoding="utf-8")
+        .lower()
+    )
+    swift = (ROOT / "clients/ios/BLEProtocol.swift").read_text(encoding="utf-8").lower()
+    for value in spec["uuids"].values():
+        assert value.lower() in cpp
+        assert value.lower() in swift
+    app_header = (
+        ROOT / "firmware/components/application_protocol/include/application_protocol.hpp"
+    ).read_text(encoding="utf-8")
+    for value in spec["message_types"].values():
+        assert f"= {value}" in app_header
+    for value in spec["error_codes"].values():
+        assert f"= {value}" in app_header

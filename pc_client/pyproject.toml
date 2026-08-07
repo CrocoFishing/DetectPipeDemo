@@ -1,0 +1,43 @@
+[build-system]
+requires = ["setuptools==80.9.0", "wheel==0.45.1"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "esp32s3-face-demo-client"
+version = "0.1.0"
+description = "BLE/InsightFace PC client for the ESP32-S3 face detection demo"
+requires-python = ">=3.11,<3.14"
+dependencies = [
+  "bleak==1.1.1",
+  "insightface==0.7.3",
+  "numpy==2.2.5",
+  "onnxruntime==1.22.1",
+  "opencv-python-headless==4.12.0.88",
+  "PyYAML==6.0.3",
+]
+
+[project.optional-dependencies]
+dev = ["pytest==9.0.3", "ruff==0.12.12", "mypy==1.17.1"]
+
+[project.scripts]
+esp32-face-client = "pc_client.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+warn_unused_ignores = false
+

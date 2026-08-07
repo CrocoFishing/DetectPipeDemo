@@ -1,0 +1,18 @@
+[recognition]
+model_name = "buffalo_l"
+threshold = 0.45
+providers = ["CPUExecutionProvider"]
+
+[database]
+path = "face_demo.db"
+save_original_registration_image = false
+
+[privacy]
+save_received_jpeg = false
+log_person_name = true
+
+[ble]
+device_name = "ESP32S3-FACE-DEMO"
+scan_timeout_s = 10.0
+recognition_timeout_s = 15.0
+

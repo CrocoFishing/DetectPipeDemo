@@ -1,0 +1,7 @@
+cmake_minimum_required(VERSION 3.16)
+set(IDF_TARGET esp32s3 CACHE STRING "Target" FORCE)
+set(EXTRA_COMPONENT_DIRS "${CMAKE_CURRENT_LIST_DIR}/../../components")
+set(COMPONENTS main ble_transport application_protocol metrics board_support)
+set(SDKCONFIG_DEFAULTS "${CMAKE_CURRENT_LIST_DIR}/../../sdkconfig.defaults;${CMAKE_CURRENT_LIST_DIR}/../../sdkconfig.ble.defaults")
+include($ENV{IDF_PATH}/tools/cmake/project.cmake)
+project(phase05_ble)

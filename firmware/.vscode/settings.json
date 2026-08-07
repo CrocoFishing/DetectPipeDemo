@@ -1,0 +1,7 @@
+{
+    "idf.currentSetup": "C:\\esp\\v6.0\\esp-idf",
+    "cmake.sourceDirectory": "C:/Users/fourb/Documents/ESP_prac/ESPIDFTest/DetectPipeDemo/firmware/apps/phase01_camera",
+    "idf.openOcdConfigs": [
+        "board/esp32s3-builtin.cfg"
+    ]
+}

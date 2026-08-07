@@ -1,0 +1,124 @@
+protocol:
+  name: esp32s3-face-demo
+  version: 1
+  magic: 0x45434146
+  magic_ascii_on_wire: FACE
+  byte_order: little
+  string_encoding: utf-8
+  header_length: 32
+  minimum_att_mtu: 36
+  maximum_image_bytes: 163840
+uuids:
+  service: 7f510000-b7b2-4f6a-9f3a-6c8a2d7e1000
+  control: 7f510001-b7b2-4f6a-9f3a-6c8a2d7e1000
+  event: 7f510002-b7b2-4f6a-9f3a-6c8a2d7e1000
+  image_data: 7f510003-b7b2-4f6a-9f3a-6c8a2d7e1000
+  recognition_result: 7f510004-b7b2-4f6a-9f3a-6c8a2d7e1000
+  device_information: 7f510005-b7b2-4f6a-9f3a-6c8a2d7e1000
+characteristics:
+  control: {properties: [write, write_without_response], permissions: [write]}
+  event: {properties: [notify, read], permissions: [read]}
+  image_data: {properties: [notify], permissions: []}
+  recognition_result: {properties: [write], permissions: [write]}
+  device_information: {properties: [read], permissions: [read]}
+message_types:
+  HELLO: 1
+  HELLO_ACK: 2
+  START_CAPTURE: 3
+  CAPTURE_ACCEPTED: 4
+  BUSY: 5
+  STATUS: 6
+  IMAGE_BEGIN: 7
+  IMAGE_CHUNK: 8
+  IMAGE_END: 9
+  RECOGNITION_RESULT: 10
+  NO_FACE: 11
+  ERROR: 12
+  PING: 13
+  PONG: 14
+commands:
+  START_CAPTURE: 1
+status_codes:
+  OK: 0
+  UNKNOWN: 1
+  NO_FACE: 2
+  FAILED: 3
+error_codes:
+  NONE: 0
+  INVALID_PACKET: 1
+  UNSUPPORTED_VERSION: 2
+  CRC_MISMATCH: 3
+  BUSY: 4
+  DUPLICATE_REQUEST: 5
+  CAMERA_INIT: 6
+  PSRAM_UNAVAILABLE: 7
+  CAPTURE_FAILED: 8
+  DETECTOR_LOAD: 9
+  INVALID_BOUNDING_BOX: 10
+  CROP_ALLOCATION: 11
+  JPEG_ENCODE: 12
+  BLE_NOT_CONNECTED: 13
+  NOTIFY_NOT_SUBSCRIBED: 14
+  BLE_CONGESTION: 15
+  TRANSFER_DISCONNECTED: 16
+  IMAGE_TIMEOUT: 17
+  CHUNK_MISSING: 18
+  RECOGNITION_TIMEOUT: 19
+  STALE_RESULT: 20
+  INCORRECT_IMAGE_ID: 21
+  INTERNAL: 22
+feature_flags:
+  EXTERNAL_BUTTON: 0x00000001
+  BLE_TRIGGER: 0x00000002
+  FACE_DETECTION: 0x00000004
+  CROPPED_JPEG: 0x00000008
+  RSSI_METRICS: 0x00000010
+header_fields:
+  - {name: magic, type: uint32, offset: 0, length: 4}
+  - {name: protocol_version, type: uint8, offset: 4, length: 1}
+  - {name: message_type, type: uint8, offset: 5, length: 1}
+  - {name: flags, type: uint16, offset: 6, length: 2}
+  - {name: request_id, type: uint32, offset: 8, length: 4}
+  - {name: image_id, type: uint32, offset: 12, length: 4}
+  - {name: payload_length, type: uint32, offset: 16, length: 4}
+  - {name: chunk_index, type: uint16, offset: 20, length: 2}
+  - {name: total_chunks, type: uint16, offset: 22, length: 2}
+  - {name: crc32, type: uint32, offset: 24, length: 4}
+  - {name: reserved, type: uint32, offset: 28, length: 4}
+payloads:
+  START_CAPTURE:
+    fields:
+      - {name: command, type: uint16, length: 2}
+      - {name: reserved, type: uint16, length: 2}
+      - {name: client_timestamp_s, type: uint32, length: 4}
+  IMAGE_BEGIN_END:
+    fields:
+      - {name: image_bytes, type: uint32, length: 4}
+      - {name: image_crc32, type: uint32, length: 4}
+  RECOGNITION_RESULT:
+    fields:
+      - {name: status, type: uint8, length: 1}
+      - {name: person_id_length, type: uint8, length: 1, maximum: 32}
+      - {name: person_name_length, type: uint8, length: 1, maximum: 64}
+      - {name: reserved, type: uint8, length: 1}
+      - {name: similarity, type: float32, length: 4}
+      - {name: processing_time_ms, type: uint32, length: 4}
+      - {name: person_id, type: utf8, length: person_id_length, optional: true}
+      - {name: person_name, type: utf8, length: person_name_length, optional: true}
+timeouts_ms:
+  capture: 4000
+  detection: 6000
+  encoding: 3000
+  image_transfer: 15000
+  image_reassembly: 15000
+  recognition_result: 15000
+  notification_retry_base: 5
+limits:
+  person_id_utf8_bytes: 32
+  person_name_utf8_bytes: 64
+  notification_retries: 3
+  rssi_samples_per_second: 1
+compatibility:
+  unknown_message: reject
+  unsupported_major_version: reject
+  added_message_type: older peers_must_ignore_only_if_optional_flag_set

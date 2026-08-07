@@ -1,0 +1,7 @@
+I ble_transport: NimBLE initialized device=ESP32S3-FACE-DEMO
+I ble_transport: connected handle=<n> mtu=<negotiated>
+I ble_transport: subscribe handle=<event/image> notify=1
+I METRIC: [METRIC] phase=5 image_id=<id> metric=ble_transfer_ms value=<actual> unit=ms
+I METRIC: [METRIC] phase=5 image_id=<id> metric=application_throughput value=<actual> unit=kbps
+CSV: transfer_success=True and CRC/length/reassembly valid
+

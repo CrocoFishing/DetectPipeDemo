@@ -1,0 +1,9 @@
+[STATE] from=IDLE to=CAPTURING image_id=<id> trigger=EXTERNAL_BUTTON|BLE_CLIENT
+[STATE] from=CAPTURING to=DETECTING image_id=<id> trigger=<source>
+[STATE] from=DETECTING to=CROPPING image_id=<id> trigger=<source>
+[STATE] from=CROPPING to=ENCODING image_id=<id> trigger=<source>
+[STATE] from=ENCODING to=TRANSMITTING image_id=<id> trigger=<source>
+[STATE] from=TRANSMITTING to=WAITING_RESULT image_id=<id> trigger=<source>
+I system_controller: recognition_result status=<0|1> person_id=<stable-id> name=<name-or-redacted> similarity=<actual> processing_ms=<actual>
+[STATE] from=COMPLETED to=IDLE image_id=<id> trigger=<source>
+

@@ -1,0 +1,6 @@
+dependencies:
+  espressif/human_face_detect:
+    version: "0.5.0"
+  espressif/esp-dl:
+    version: "3.3.9"
+

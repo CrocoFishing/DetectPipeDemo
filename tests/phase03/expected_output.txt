@@ -1,0 +1,9 @@
+I face_detection: model_loaded name=espdet_pico_224_224_face_s8_s3 input=224x224 threshold=0.50
+I face_detection: face_detection_count=<n>
+I phase03: largest=(...) expanded=(...) faces=<n>
+I image_processing: JPEG encoded bytes=<nonzero> quality=85
+I phase03: [TEST] phase=3 result=JPEG_READY crc32=<crc> width=<positive> height=<positive>
+I phase03: [JPEG_B64] index=0 data=<base64>
+I phase03: [JPEG_B64_END] chunks=<positive> bytes=<same JPEG byte count>
+OR
+I phase03: [TEST] phase=3 result=NO_FACE safe_idle=true

@@ -1,0 +1,6 @@
+I trigger: external trigger enabled gpio=2 debounce_ms=40 after system initialization
+I state: [STATE] from=INITIALIZING to=IDLE image_id=0 trigger=EXTERNAL_BUTTON
+I phase02: mock accepted=0 busy=1 duplicate_while_busy=1
+I phase02: duplicate_after_complete=2 expected=2
+I trigger: button request_id=<bit31-set> result=0 source=EXTERNAL_BUTTON
+

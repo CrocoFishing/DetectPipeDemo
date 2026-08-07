@@ -1,0 +1,15 @@
+Metadata-Version: 2.4
+Name: esp32s3-face-demo-client
+Version: 0.1.0
+Summary: BLE/InsightFace PC client for the ESP32-S3 face detection demo
+Requires-Python: <3.14,>=3.11
+Requires-Dist: bleak==1.1.1
+Requires-Dist: insightface==0.7.3
+Requires-Dist: numpy==2.2.5
+Requires-Dist: onnxruntime==1.22.1
+Requires-Dist: opencv-python-headless==4.12.0.88
+Requires-Dist: PyYAML==6.0.3
+Provides-Extra: dev
+Requires-Dist: pytest==9.0.3; extra == "dev"
+Requires-Dist: ruff==0.12.12; extra == "dev"
+Requires-Dist: mypy==1.17.1; extra == "dev"
