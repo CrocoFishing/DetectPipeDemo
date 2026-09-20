@@ -1,9 +1,14 @@
 I face_detection: model_loaded name=espdet_pico_224_224_face_s8_s3 input=224x224 threshold=0.50
 I face_detection: face_detection_count=<n>
-I phase03: largest=(...) expanded=(...) faces=<n>
+I phase03: detection_attempt capture=<1..3>/3 rotated=false faces=<n>
+OPTIONAL I phase03: no_face recapture_next=<2..3>/3
+OPTIONAL I image_processing: RGB565 frame rotated 180 degrees width=<width> height=<height>
+OPTIONAL I phase03: detection_attempt capture=3/3 rotated=true faces=<n>
+FOR EACH FACE IN DESCENDING RAW AREA ORDER:
+I phase03: face_selected rank=<1..n>/<n> box=(...) area=<descending> confidence=<score> expanded=(...)
 I image_processing: JPEG encoded bytes=<nonzero> quality=85
-I phase03: [TEST] phase=3 result=JPEG_READY crc32=<crc> width=<positive> height=<positive>
-I phase03: [JPEG_B64] index=0 data=<base64>
-I phase03: [JPEG_B64_END] chunks=<positive> bytes=<same JPEG byte count>
+I phase03: [TEST] phase=3 result=JPEG_READY face=<1..n>/<n> crc32=<crc> width=<positive> height=<positive>
+I phase03: [JPEG_B64] face=<same>/<n> index=0 data=<base64>
+I phase03: [JPEG_B64_END] face=<same>/<n> chunks=<positive> bytes=<same JPEG byte count>
 OR
 I phase03: [TEST] phase=3 result=NO_FACE safe_idle=true

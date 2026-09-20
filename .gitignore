@@ -9,5 +9,7 @@ __pycache__/
 .ruff_cache/
 .venv/
 *.db
+# Local biometric test output; keep it out of version control.
+/output.png
 results/**/actual/*
 !results/**/actual/.gitkeep
