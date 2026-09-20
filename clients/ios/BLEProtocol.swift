@@ -19,6 +19,12 @@ public enum MessageType: UInt8 {
     case recognitionResult = 10, noFace = 11, error = 12, ping = 13, pong = 14
 }
 
+public struct MessageFlags: OptionSet {
+    public let rawValue: UInt16
+    public init(rawValue: UInt16) { self.rawValue = rawValue }
+    public static let faceSequence = MessageFlags(rawValue: 0x0001)
+}
+
 public enum Command: UInt16 { case startCapture = 1 }
 public enum StatusCode: UInt8 { case ok = 0, unknown = 1, noFace = 2, failed = 3 }
 public enum ErrorCode: UInt16 {
@@ -125,6 +131,9 @@ public final class ImageChunkAssembler {
     private var totalChunks: UInt16 = 0
     private var chunks: [UInt16: Data] = [:]
     public private(set) var duplicatedSequenceCount = 0
+    public private(set) var faceIndex: UInt16 = 0
+    public private(set) var faceCount: UInt16 = 1
+    private var faceSequenceFlagged = false
 
     public init() {}
 
@@ -133,6 +142,9 @@ public final class ImageChunkAssembler {
             throw ProtocolValidationError.invalidLength
         }
         requestID = packet.header.requestID; imageID = packet.header.imageID
+        let sequence = try Self.decodeFaceSequence(packet.header)
+        faceSequenceFlagged = sequence.flagged
+        faceIndex = sequence.index; faceCount = sequence.count
         expectedBytes = packet.payload.uint32LE(at: 0); expectedCRC = packet.payload.uint32LE(at: 4)
         totalChunks = 0; chunks.removeAll(keepingCapacity: true); duplicatedSequenceCount = 0
     }
@@ -153,12 +165,33 @@ public final class ImageChunkAssembler {
     public func finish(_ packet: Packet) throws -> Data {
         guard packet.header.messageType == .imageEnd, packet.header.requestID == requestID,
               packet.header.imageID == imageID else { throw ProtocolValidationError.wrongIdentifiers }
+        guard packet.payload.count == 8 else { throw ProtocolValidationError.invalidLength }
+        let sequence = try Self.decodeFaceSequence(packet.header)
+        guard sequence.flagged == faceSequenceFlagged,
+              sequence.index == faceIndex, sequence.count == faceCount else {
+            throw ProtocolValidationError.invalidSequence
+        }
+        guard packet.payload.uint32LE(at: 0) == expectedBytes,
+              packet.payload.uint32LE(at: 4) == expectedCRC else {
+            throw ProtocolValidationError.invalidSequence
+        }
         let missing = (0..<totalChunks).filter { chunks[$0] == nil }
         guard missing.isEmpty else { throw ProtocolValidationError.missingChunks(missing) }
         var image = Data(); for index in 0..<totalChunks { image.append(chunks[index]!) }
         guard image.count == Int(expectedBytes) else { throw ProtocolValidationError.invalidLength }
         guard CRC32.checksum(image) == expectedCRC else { throw ProtocolValidationError.crcMismatch }
         return image
+    }
+
+    private static func decodeFaceSequence(
+        _ header: PacketHeader
+    ) throws -> (flagged: Bool, index: UInt16, count: UInt16) {
+        let flagged = MessageFlags(rawValue: header.flags).contains(.faceSequence)
+        guard flagged else { return (false, 0, 1) }
+        let index = UInt16(header.reserved & 0xffff)
+        let count = UInt16((header.reserved >> 16) & 0xffff)
+        guard count > 0, index < count else { throw ProtocolValidationError.invalidSequence }
+        return (true, index, count)
     }
 }
 

@@ -199,13 +199,22 @@ void BleTransport::sample_rssi(uint32_t image, int64_t now) {
     int8_t rssi = 0; if (ble_gap_conn_rssi(connection_handle_, &rssi) == 0) { metrics_.add_rssi(rssi); metrics_.emit(image, "rssi_current_dbm", rssi, "dBm"); }
     last_rssi_us_ = now;
 }
-esp_err_t BleTransport::send_image(uint32_t request, uint32_t image, const uint8_t* jpeg, size_t len) {
+esp_err_t BleTransport::send_image(uint32_t request, uint32_t image, const uint8_t* jpeg, size_t len,
+                                   uint16_t face_index, uint16_t face_count) {
     if (!connected_) return ESP_ERR_INVALID_STATE;
     if (!image_subscribed_) return ESP_ERR_NOT_FOUND;
     const size_t chunk = chunk_payload_size(); if (!chunk || !jpeg || !len || len > board::MAX_JPEG_BYTES) return ESP_ERR_INVALID_SIZE;
+    if ((!face_count && face_index) || (face_count && face_index >= face_count)) return ESP_ERR_INVALID_ARG;
+    const uint16_t sequence_flags = face_count
+        ? static_cast<uint16_t>(protocol::MessageFlag::FaceSequence)
+        : 0;
+    const uint32_t sequence_metadata = face_count
+        ? (static_cast<uint32_t>(face_count) << 16) | face_index
+        : 0;
     const uint16_t total = static_cast<uint16_t>((len + chunk - 1) / chunk); const uint32_t image_crc = protocol::crc32(jpeg, len);
     uint8_t meta[8]; for (int i=0;i<4;++i) { meta[i]=static_cast<uint8_t>(len>>(8*i)); meta[4+i]=static_cast<uint8_t>(image_crc>>(8*i)); }
-    esp_err_t err = send_event(protocol::MessageType::ImageBegin, request, image, meta, sizeof(meta)); if (err != ESP_OK) return err;
+    esp_err_t err = send_event(protocol::MessageType::ImageBegin, request, image, meta, sizeof(meta),
+                               sequence_flags, sequence_metadata); if (err != ESP_OK) return err;
     transferring_ = true; metrics_.reset_rssi(); const int64_t started = esp_timer_get_time();
     for (uint16_t i = 0; i < total && connected_; ++i) {
         if (esp_timer_get_time() - started > 15'000'000) { err = ESP_ERR_TIMEOUT; break; }
@@ -216,7 +225,10 @@ esp_err_t BleTransport::send_image(uint32_t request, uint32_t image, const uint8
         sample_rssi(image, esp_timer_get_time()); vTaskDelay(1);
     }
     transferring_ = false;
-    if (err == ESP_OK && connected_) err = send_event(protocol::MessageType::ImageEnd, request, image, meta, sizeof(meta));
+    if (err == ESP_OK && connected_) {
+        err = send_event(protocol::MessageType::ImageEnd, request, image, meta, sizeof(meta),
+                         sequence_flags, sequence_metadata);
+    }
     const double ms = (esp_timer_get_time() - started) / 1000.0;
     metrics_.emit(image, "ble_transfer_ms", ms, "ms"); metrics_.emit(image, "image_bytes", len, "bytes");
     metrics_.emit(image, "chunk_count", total, "count"); metrics_.emit(image, "application_throughput", ms > 0 ? len * 8.0 / ms : 0, "kbps");

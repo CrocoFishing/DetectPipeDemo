@@ -38,10 +38,9 @@ esp_err_t FaceDetectionService::detect(const camera_fb_t& f, std::vector<FaceBox
     }
     ESP_LOGI(TAG, "face_detection_count=%u", static_cast<unsigned>(out.size())); return ESP_OK;
 }
-bool FaceDetectionService::select_largest(const std::vector<FaceBox>& rs, FaceBox& largest) {
-    if (rs.empty()) return false;
-    largest = *std::max_element(rs.begin(), rs.end(), [](const FaceBox& a, const FaceBox& b) { return a.area() < b.area(); });
-    return largest.valid();
+void FaceDetectionService::sort_largest_first(std::vector<FaceBox>& results) {
+    std::stable_sort(results.begin(), results.end(),
+                     [](const FaceBox& a, const FaceBox& b) { return a.area() > b.area(); });
 }
 FaceBox FaceDetectionService::expand_and_clamp(const FaceBox& b, int fw, int fh) {
     const float dx = b.width() * board::FACE_MARGIN_PER_SIDE; const float dy = b.height() * board::FACE_MARGIN_PER_SIDE;
@@ -51,4 +50,3 @@ FaceBox FaceDetectionService::expand_and_clamp(const FaceBox& b, int fw, int fh)
     return o;
 }
 }  // namespace demo
-

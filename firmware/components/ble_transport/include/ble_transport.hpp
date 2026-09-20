@@ -31,7 +31,8 @@ public:
     esp_err_t send_event(protocol::MessageType type, uint32_t request_id, uint32_t image_id,
                          const uint8_t* payload = nullptr, size_t payload_length = 0,
                          uint16_t flags = 0, uint32_t reserved = 0);
-    esp_err_t send_image(uint32_t request_id, uint32_t image_id, const uint8_t* jpeg, size_t length);
+    esp_err_t send_image(uint32_t request_id, uint32_t image_id, const uint8_t* jpeg, size_t length,
+                         uint16_t face_index = 0, uint16_t face_count = 0);
     bool connected() const { return connected_; }
     bool event_subscribed() const { return event_subscribed_; }
     bool image_subscribed() const { return image_subscribed_; }
@@ -55,4 +56,3 @@ private:
     int64_t last_rssi_us_{0}; BleQualityCounters counters_{}; uint8_t last_event_[128]{}; size_t last_event_length_{0};
 };
 }  // namespace demo
-

@@ -34,11 +34,15 @@ inline constexpr gpio_num_t STATUS_LED_GPIO = GPIO_NUM_21;
 inline constexpr int STATUS_LED_ACTIVE_LEVEL = 0;
 
 inline constexpr uint32_t CAMERA_XCLK_HZ = 20'000'000;
-inline constexpr uint16_t CAMERA_FRAME_WIDTH = 640;
-inline constexpr uint16_t CAMERA_FRAME_HEIGHT = 480;
+inline constexpr uint16_t CAMERA_FRAME_WIDTH = 1024;
+inline constexpr uint16_t CAMERA_FRAME_HEIGHT = 768;
 inline constexpr uint16_t DETECTOR_INPUT_WIDTH = 224;
 inline constexpr uint16_t DETECTOR_INPUT_HEIGHT = 224;
 inline constexpr float FACE_CONFIDENCE_THRESHOLD = 0.50F;
+// Number of additional captures after the initial no-face result.
+inline constexpr uint8_t FACE_DETECTION_MAX_RECAPTURES = 2;
+// After all normal-orientation captures miss, retry the final frame in-place at 180 degrees.
+inline constexpr bool FACE_DETECTION_ROTATE_FINAL_FRAME_180 = true;
 inline constexpr float FACE_TOTAL_MARGIN = 0.4F;
 inline constexpr float FACE_MARGIN_PER_SIDE = FACE_TOTAL_MARGIN / 2.0F;
 inline constexpr uint8_t JPEG_QUALITY = 85;

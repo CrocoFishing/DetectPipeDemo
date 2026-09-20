@@ -16,6 +16,7 @@ enum class MessageType : uint8_t {
 };
 enum class Command : uint16_t { StartCapture = 1 };
 enum class StatusCode : uint8_t { Ok = 0, Unknown = 1, NoFace = 2, Failed = 3 };
+enum MessageFlag : uint16_t { FaceSequence = 1U << 0 };
 enum class ErrorCode : uint16_t {
     None = 0, InvalidPacket = 1, UnsupportedVersion = 2, CrcMismatch = 3,
     Busy = 4, DuplicateRequest = 5, CameraInit = 6, PsramUnavailable = 7,
@@ -53,4 +54,3 @@ DecodeStatus decode_packet(const uint8_t* data, size_t length, PacketHeader& hea
 const char* message_type_name(MessageType type);
 
 }  // namespace protocol
-

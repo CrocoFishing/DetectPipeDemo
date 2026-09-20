@@ -8,7 +8,7 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from .ble_client import BleFaceSession, append_metrics_csv, scan_devices
+from .ble_client import BleFaceSession, ReceivedFaceImage, append_metrics_csv, scan_devices
 from .database import FaceDatabase
 from .protocol import StatusCode
 from .recognizer import recognize_embedding
@@ -58,26 +58,54 @@ async def run_client(args: argparse.Namespace) -> None:
     database = FaceDatabase(args.database)
     session: BleFaceSession
 
-    async def on_image(request_id: int, image_id: int, jpeg: bytes) -> None:
+    async def on_image(image: ReceivedFaceImage) -> None:
         started = time.perf_counter()
         try:
-            vector = face_engine.embedding_from_bytes(jpeg)
+            vector = face_engine.embedding_from_bytes(image.jpeg)
             found = recognize_embedding(vector, database, args.model, args.threshold)
+            status = found.status
+            person_id = found.person_id
+            person_name = found.person_name
+            similarity = found.similarity
         except Exception as exc:
             logging.exception("recognition failed")
-            await session.send_recognition_result(
-                request_id, image_id, StatusCode.FAILED, "", str(exc)[:64], 0, 0
-            )
-            return
+            status = StatusCode.FAILED
+            person_id = ""
+            person_name = str(exc)[:64]
+            similarity = 0.0
+        processing_time_ms = int((time.perf_counter() - started) * 1000)
         await session.send_recognition_result(
-            request_id,
-            image_id,
-            found.status,
-            found.person_id,
-            found.person_name,
-            found.similarity,
-            int((time.perf_counter() - started) * 1000),
+            image.request_id,
+            image.image_id,
+            status,
+            person_id,
+            person_name,
+            similarity,
+            processing_time_ms,
         )
+        logging.info(
+            "face_result request_id=%d image_id=%d face=%d/%d status=%s person_id=%s "
+            "name=%s similarity=%.4f processing_ms=%d",
+            image.request_id,
+            image.image_id,
+            image.face_index + 1,
+            image.face_count,
+            status.name,
+            person_id,
+            person_name,
+            similarity,
+            processing_time_ms,
+        )
+        summary = session.complete_face(image, status)
+        if summary:
+            logging.info(
+                "face_batch_complete request_id=%d faces=%d ok=%d unknown=%d failed=%d",
+                summary.request_id,
+                summary.face_count,
+                summary.ok_count,
+                summary.unknown_count,
+                summary.failed_count,
+            )
 
     session = BleFaceSession(args.device_name, on_image)
     await session.connect()

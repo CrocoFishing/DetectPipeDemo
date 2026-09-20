@@ -22,6 +22,7 @@ def test_yaml_matches_python() -> None:
     }
     assert spec["uuids"] == actual_uuids
     assert spec["message_types"] == {item.name: item.value for item in protocol.MessageType}
+    assert spec["message_flags"] == {item.name: item.value for item in protocol.MessageFlag}
     assert spec["error_codes"] == {item.name: item.value for item in protocol.ErrorCode}
 
 
@@ -43,3 +44,5 @@ def test_cpp_and_swift_contain_protocol_constants() -> None:
         assert f"= {value}" in app_header
     for value in spec["error_codes"].values():
         assert f"= {value}" in app_header
+    assert "FaceSequence" in app_header
+    assert "facesequence" in swift

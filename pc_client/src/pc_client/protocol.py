@@ -42,6 +42,10 @@ class MessageType(enum.IntEnum):
     PONG = 14
 
 
+class MessageFlag(enum.IntFlag):
+    FACE_SEQUENCE = 0x0001
+
+
 class Command(enum.IntEnum):
     START_CAPTURE = 1
 
@@ -128,6 +132,24 @@ class Packet:
             reserved=self.header.reserved,
         )
         return header.encode() + self.payload
+
+
+def pack_face_sequence(face_index: int, face_count: int) -> tuple[int, int]:
+    if not 0 < face_count <= 0xFFFF:
+        raise ValueError("face_count must be between 1 and 65535")
+    if not 0 <= face_index < face_count:
+        raise ValueError("face_index must be less than face_count")
+    return int(MessageFlag.FACE_SEQUENCE), (face_count << 16) | face_index
+
+
+def unpack_face_sequence(header: PacketHeader) -> tuple[int, int]:
+    if not header.flags & MessageFlag.FACE_SEQUENCE:
+        return 0, 1
+    face_index = header.reserved & 0xFFFF
+    face_count = (header.reserved >> 16) & 0xFFFF
+    if face_count == 0 or face_index >= face_count:
+        raise ProtocolError("invalid face sequence metadata")
+    return face_index, face_count
 
 
 def crc32(data: bytes) -> int:

@@ -43,6 +43,8 @@ status_codes:
   UNKNOWN: 1
   NO_FACE: 2
   FAILED: 3
+message_flags:
+  FACE_SEQUENCE: 0x0001
 error_codes:
   NONE: 0
   INVALID_PACKET: 1
@@ -92,6 +94,10 @@ payloads:
       - {name: reserved, type: uint16, length: 2}
       - {name: client_timestamp_s, type: uint32, length: 4}
   IMAGE_BEGIN_END:
+    header_metadata:
+      face_sequence_flag: FACE_SEQUENCE
+      face_index: reserved[15:0]
+      face_count: reserved[31:16]
     fields:
       - {name: image_bytes, type: uint32, length: 4}
       - {name: image_crc32, type: uint32, length: 4}
@@ -122,3 +128,4 @@ compatibility:
   unknown_message: reject
   unsupported_major_version: reject
   added_message_type: older peers_must_ignore_only_if_optional_flag_set
+  face_sequence_absent: {face_index: 0, face_count: 1}

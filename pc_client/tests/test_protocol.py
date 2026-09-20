@@ -7,11 +7,13 @@ from pc_client.assembler import ImageAssembler, make_image_packets
 from pc_client.protocol import (
     HEADER_SIZE,
     MAGIC,
+    MessageFlag,
     MessageType,
     PartialPacket,
     ProtocolError,
     decode_packet,
     make_packet,
+    pack_face_sequence,
 )
 
 
@@ -119,3 +121,46 @@ def test_reassembly_timeout() -> None:
         assembler.add(chunks[0])
     with pytest.raises(TimeoutError):
         assembler.finish(end)
+
+
+def test_face_sequence_metadata_round_trip_and_legacy_default() -> None:
+    data = b"face-image"
+    begin, chunks, end = make_image_packets(data, 7, 11, 4, face_index=1, face_count=3)
+    assert begin.header.flags & MessageFlag.FACE_SEQUENCE
+    assembler = ImageAssembler()
+    assembler.begin(begin)
+    assert (assembler.face_index, assembler.face_count) == (1, 3)
+    for chunk in chunks:
+        assembler.add(chunk)
+    assert assembler.finish(end) == data
+
+    legacy_begin, _, _ = make_image_packets(data, 8, 12, 4)
+    assembler.begin(legacy_begin)
+    assert (assembler.face_index, assembler.face_count) == (0, 1)
+
+
+def test_invalid_face_sequence_metadata_is_rejected() -> None:
+    flags, _ = pack_face_sequence(0, 2)
+    metadata = struct.pack("<II", 1, 0)
+    invalid = decode_packet(
+        make_packet(
+            MessageType.IMAGE_BEGIN,
+            request_id=1,
+            image_id=2,
+            payload=metadata,
+            flags=flags,
+            reserved=1,
+        )
+    )
+    with pytest.raises(ProtocolError, match="face sequence"):
+        ImageAssembler().begin(invalid)
+
+
+def test_image_end_face_sequence_mismatch_is_rejected() -> None:
+    begin, chunks, _ = make_image_packets(b"abc", 1, 2, 3, face_index=0, face_count=2)
+    _, _, mismatched_end = make_image_packets(b"abc", 1, 2, 3, face_index=1, face_count=2)
+    assembler = ImageAssembler()
+    assembler.begin(begin)
+    assembler.add(chunks[0])
+    with pytest.raises(ProtocolError, match="metadata mismatch"):
+        assembler.finish(mismatched_end)

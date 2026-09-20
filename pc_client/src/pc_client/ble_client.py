@@ -5,7 +5,7 @@ import csv
 import logging
 import time
 from collections.abc import Callable
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -57,6 +57,91 @@ class TransferMetrics:
     queue_congestion_count: int
 
 
+@dataclass(frozen=True, slots=True)
+class ReceivedFaceImage:
+    request_id: int
+    image_id: int
+    face_index: int
+    face_count: int
+    jpeg: bytes
+
+
+@dataclass(frozen=True, slots=True)
+class RecognitionBatchSummary:
+    request_id: int
+    face_count: int
+    ok_count: int
+    unknown_count: int
+    failed_count: int
+
+
+@dataclass(slots=True)
+class _FaceBatchProgress:
+    face_count: int
+    next_index: int = 0
+    image_ids: set[int] = field(default_factory=set)
+    completed_image_ids: set[int] = field(default_factory=set)
+    ok_count: int = 0
+    unknown_count: int = 0
+    failed_count: int = 0
+
+
+class FaceBatchTracker:
+    def __init__(self) -> None:
+        self._batches: dict[int, _FaceBatchProgress] = {}
+
+    def accept(self, image: ReceivedFaceImage) -> None:
+        if image.face_count <= 0 or not 0 <= image.face_index < image.face_count:
+            raise ProtocolError("invalid face sequence metadata")
+        progress = self._batches.get(image.request_id)
+        if progress is None:
+            if image.face_index != 0:
+                raise ProtocolError("face batch must begin at index 0")
+            progress = _FaceBatchProgress(face_count=image.face_count)
+            self._batches[image.request_id] = progress
+        if image.face_count != progress.face_count:
+            raise ProtocolError("face_count changed within request")
+        if image.face_index != progress.next_index:
+            raise ProtocolError("face_index is missing, duplicated, or out of order")
+        if image.image_id in progress.image_ids:
+            raise ProtocolError("duplicate image_id within face batch")
+        progress.image_ids.add(image.image_id)
+        progress.next_index += 1
+
+    def complete(self, image: ReceivedFaceImage, status: StatusCode) -> RecognitionBatchSummary | None:
+        progress = self._batches.get(image.request_id)
+        if progress is None or image.image_id not in progress.image_ids:
+            raise ProtocolError("result does not belong to an accepted face image")
+        if image.image_id in progress.completed_image_ids:
+            raise ProtocolError("duplicate face recognition result")
+        progress.completed_image_ids.add(image.image_id)
+        if status == StatusCode.OK:
+            progress.ok_count += 1
+        elif status == StatusCode.UNKNOWN:
+            progress.unknown_count += 1
+        else:
+            progress.failed_count += 1
+        if len(progress.completed_image_ids) != progress.face_count:
+            return None
+        if progress.next_index != progress.face_count:
+            raise ProtocolError("face batch completed before all images arrived")
+        summary = RecognitionBatchSummary(
+            request_id=image.request_id,
+            face_count=progress.face_count,
+            ok_count=progress.ok_count,
+            unknown_count=progress.unknown_count,
+            failed_count=progress.failed_count,
+        )
+        del self._batches[image.request_id]
+        return summary
+
+    def abort(self, request_id: int) -> None:
+        self._batches.pop(request_id, None)
+
+    def clear(self) -> None:
+        self._batches.clear()
+
+
 async def find_device(name: str, timeout: float = 10.0) -> tuple[Any, int | None]:
     try:
         from bleak import BleakScanner
@@ -88,7 +173,7 @@ async def scan_devices(timeout: float = 10.0) -> list[dict[str, object]]:
 
 
 class BleFaceSession:
-    def __init__(self, device_name: str, on_image: Callable[[int, int, bytes], Any] | None = None) -> None:
+    def __init__(self, device_name: str, on_image: Callable[[ReceivedFaceImage], Any] | None = None) -> None:
         self.device_name = device_name
         self.on_image = on_image
         self.assembler = ImageAssembler()
@@ -102,6 +187,7 @@ class BleFaceSession:
         self.crc_failures = 0
         self.disconnect_count = 0
         self.reconnect_count = 0
+        self.batch_tracker = FaceBatchTracker()
 
     async def connect(self, timeout: float = 10.0) -> None:
         from bleak import BleakClient
@@ -122,6 +208,7 @@ class BleFaceSession:
 
     def _disconnected(self, _: Any) -> None:
         self.disconnect_count += 1
+        self.batch_tracker.clear()
 
     def _notification(self, _: Any, data: bytearray) -> None:
         try:
@@ -135,15 +222,26 @@ class BleFaceSession:
                 self.assembler.add(packet)
                 self.chunk_count += 1
             elif packet.header.message_type is MessageType.IMAGE_END:
-                image = self.assembler.finish(packet)
-                self.last_image = image
+                jpeg = self.assembler.finish(packet)
+                image = ReceivedFaceImage(
+                    request_id=packet.header.request_id,
+                    image_id=packet.header.image_id,
+                    face_index=self.assembler.face_index,
+                    face_count=self.assembler.face_count,
+                    jpeg=jpeg,
+                )
+                if self.on_image:
+                    self.batch_tracker.accept(image)
+                self.last_image = jpeg
                 self.last_ids = (packet.header.request_id, packet.header.image_id)
                 self.image_complete.set()
                 if self.on_image:
-                    result = self.on_image(*self.last_ids, image)
+                    result = self.on_image(image)
                     if asyncio.iscoroutine(result):
                         asyncio.create_task(result)
             else:
+                if packet.header.message_type in (MessageType.ERROR, MessageType.NO_FACE):
+                    self.batch_tracker.abort(packet.header.request_id)
                 self._log_event(packet)
         except ProtocolError as exc:
             self.crc_failures += int("CRC" in str(exc))
@@ -189,6 +287,9 @@ class BleFaceSession:
             processing_time_ms=processing_time_ms,
         )
         await self.client.write_gatt_char(RESULT_UUID, packet, response=True)
+
+    def complete_face(self, image: ReceivedFaceImage, status: StatusCode) -> RecognitionBatchSummary | None:
+        return self.batch_tracker.complete(image, status)
 
     def metrics(self) -> TransferMetrics:
         duration = max(0.0, (time.perf_counter() - self.started) * 1000)

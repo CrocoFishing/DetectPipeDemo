@@ -9,6 +9,9 @@
 namespace demo {
 struct BufferView { uint8_t* data{nullptr}; size_t size{0}; uint16_t width{0}; uint16_t height{0}; };
 
+// Rotates a packed RGB565 camera frame in-place without allocating another frame buffer.
+esp_err_t rotate_rgb565_180(camera_fb_t& frame);
+
 class ReusableImageBuffers {
 public:
     ~ReusableImageBuffers();
@@ -23,4 +26,3 @@ private:
     size_t jpeg_size_{0}; bool crop_owned_{false}; bool jpeg_owned_{false}; bool jpeg_overflow_{false};
 };
 }  // namespace demo
-

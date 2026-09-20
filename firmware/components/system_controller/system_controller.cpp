@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <limits>
 #include <vector>
 #include "board_config.hpp"
 #include "board_support.hpp"
@@ -77,48 +78,172 @@ void SystemController::pipeline_task() {
     esp_task_wdt_add(nullptr);
     while (true) {
         CaptureRequest r{}; if (!triggers_.receive(r, pdMS_TO_TICKS(1000))) { esp_task_wdt_reset(); continue; }
-        const uint32_t image = next_image_id_++; board::set_status_led(true); transition(SystemState::Capturing, r, image);
-        auto frame = camera_.capture(); if (!frame) { recover(r, image, protocol::ErrorCode::CaptureFailed); continue; }
-        transition(SystemState::Detecting, r, image); std::vector<FaceBox> faces;
-        if (detector_.detect(*frame.get(), faces) != ESP_OK) { frame.reset(); recover(r, image, protocol::ErrorCode::DetectorLoad); continue; }
-        FaceBox largest{};
-        if (!FaceDetectionService::select_largest(faces, largest)) {
+        const uint32_t image = next_image_id_++;
+        const uint32_t capture_attempts = 1U + static_cast<uint32_t>(board::FACE_DETECTION_MAX_RECAPTURES);
+        board::set_status_led(true);
+
+        FrameLease frame;
+        std::vector<FaceBox> faces;
+        protocol::ErrorCode attempt_error = protocol::ErrorCode::None;
+        for (uint32_t attempt = 1; attempt <= capture_attempts; ++attempt) {
+            transition(SystemState::Capturing, r, image);
+            frame = camera_.capture();
+            if (!frame) {
+                attempt_error = protocol::ErrorCode::CaptureFailed;
+                break;
+            }
+            esp_task_wdt_reset();
+
+            transition(SystemState::Detecting, r, image);
+            if (detector_.detect(*frame.get(), faces) != ESP_OK) {
+                attempt_error = protocol::ErrorCode::DetectorLoad;
+                break;
+            }
+            esp_task_wdt_reset();
+            ESP_LOGI(TAG, "detection_attempt capture=%lu/%lu rotated=false faces=%u",
+                     static_cast<unsigned long>(attempt), static_cast<unsigned long>(capture_attempts),
+                     static_cast<unsigned>(faces.size()));
+            if (!faces.empty()) break;
+
+            if (attempt < capture_attempts) {
+                ESP_LOGI(TAG, "no_face recapture_next=%lu/%lu",
+                         static_cast<unsigned long>(attempt + 1U), static_cast<unsigned long>(capture_attempts));
+                frame.reset();
+                continue;
+            }
+
+            if (board::FACE_DETECTION_ROTATE_FINAL_FRAME_180) {
+                if (rotate_rgb565_180(*frame.get()) != ESP_OK) {
+                    attempt_error = protocol::ErrorCode::Internal;
+                    break;
+                }
+                esp_task_wdt_reset();
+                if (detector_.detect(*frame.get(), faces) != ESP_OK) {
+                    attempt_error = protocol::ErrorCode::DetectorLoad;
+                    break;
+                }
+                esp_task_wdt_reset();
+                ESP_LOGI(TAG, "detection_attempt capture=%lu/%lu rotated=true faces=%u",
+                         static_cast<unsigned long>(attempt), static_cast<unsigned long>(capture_attempts),
+                         static_cast<unsigned>(faces.size()));
+            }
+        }
+
+        if (attempt_error != protocol::ErrorCode::None) {
+            frame.reset();
+            recover(r, image, attempt_error);
+            continue;
+        }
+
+        if (faces.empty()) {
             frame.reset(); transition(SystemState::NoFace, r, image);
             if (ble_.connected() && ble_.event_subscribed()) ble_.send_event(protocol::MessageType::NoFace, r.request_id, image);
             transition(SystemState::Idle, r, image); triggers_.complete(); board::set_status_led(false); continue;
         }
-        FaceBox expanded = FaceDetectionService::expand_and_clamp(largest, frame->width, frame->height);
-        if (!expanded.valid()) { frame.reset(); recover(r, image, protocol::ErrorCode::InvalidBoundingBox); continue; }
-        transition(SystemState::Cropping, r, image); BufferView crop{};
-        if (buffers_.copy_crop(*frame.get(), expanded, crop) != ESP_OK) { frame.reset(); recover(r, image, protocol::ErrorCode::CropAllocation); continue; }
-        frame.reset(); transition(SystemState::Encoding, r, image); BufferView jpeg{};
-        if (buffers_.encode_jpeg(crop, jpeg) != ESP_OK) { buffers_.release_crop(); recover(r, image, protocol::ErrorCode::JpegEncode); continue; }
-        buffers_.release_crop(); transition(SystemState::Transmitting, r, image);
-        esp_err_t tx = ble_.send_image(r.request_id, image, jpeg.data, jpeg.size); buffers_.release_jpeg();
-        if (tx != ESP_OK) { recover(r, image, ble_.connected() ? protocol::ErrorCode::BleCongestion : protocol::ErrorCode::TransferDisconnected); continue; }
-        transition(SystemState::WaitingResult, r, image);
-        if (!await_result(r, image)) { recover(r, image, protocol::ErrorCode::RecognitionTimeout); continue; }
-        transition(SystemState::Completed, r, image); transition(SystemState::Idle, r, image);
+        if (faces.size() > std::numeric_limits<uint16_t>::max()) {
+            frame.reset(); recover(r, image, protocol::ErrorCode::Internal); continue;
+        }
+
+        FaceDetectionService::sort_largest_first(faces);
+        const uint16_t face_count = static_cast<uint16_t>(faces.size());
+        uint32_t ok_count = 0, unknown_count = 0, failed_count = 0;
+        uint32_t current_image = image;
+        bool batch_failed = false;
+
+        for (uint16_t face_index = 0; face_index < face_count; ++face_index) {
+            if (face_index) current_image = next_image_id_++;
+            const FaceBox& face = faces[face_index];
+            const FaceBox expanded = FaceDetectionService::expand_and_clamp(
+                face, frame->width, frame->height);
+            ESP_LOGI(TAG,
+                     "face_selected rank=%u/%u image=%lu box=(%d,%d,%d,%d) area=%d "
+                     "confidence=%.4f expanded=(%d,%d,%d,%d)",
+                     static_cast<unsigned>(face_index + 1U), static_cast<unsigned>(face_count),
+                     static_cast<unsigned long>(current_image), face.x1, face.y1, face.x2, face.y2,
+                     face.area(), face.confidence, expanded.x1, expanded.y1, expanded.x2, expanded.y2);
+            if (!expanded.valid()) {
+                frame.reset(); recover(r, current_image, protocol::ErrorCode::InvalidBoundingBox);
+                batch_failed = true; break;
+            }
+
+            transition(SystemState::Cropping, r, current_image);
+            BufferView crop{};
+            if (buffers_.copy_crop(*frame.get(), expanded, crop) != ESP_OK) {
+                frame.reset(); recover(r, current_image, protocol::ErrorCode::CropAllocation);
+                batch_failed = true; break;
+            }
+            if (face_index + 1U == face_count) frame.reset();
+
+            transition(SystemState::Encoding, r, current_image);
+            BufferView jpeg{};
+            if (buffers_.encode_jpeg(crop, jpeg) != ESP_OK) {
+                frame.reset(); recover(r, current_image, protocol::ErrorCode::JpegEncode);
+                batch_failed = true; break;
+            }
+            buffers_.release_crop();
+
+            transition(SystemState::Transmitting, r, current_image);
+            const esp_err_t tx = ble_.send_image(r.request_id, current_image, jpeg.data, jpeg.size,
+                                                 face_index, face_count);
+            buffers_.release_jpeg();
+            if (tx != ESP_OK) {
+                frame.reset();
+                recover(r, current_image, ble_.connected() ? protocol::ErrorCode::BleCongestion
+                                                           : protocol::ErrorCode::TransferDisconnected);
+                batch_failed = true; break;
+            }
+
+            transition(SystemState::WaitingResult, r, current_image);
+            uint8_t result_status = static_cast<uint8_t>(protocol::StatusCode::Failed);
+            if (!await_result(r, current_image, face_index, face_count, result_status)) {
+                frame.reset(); recover(r, current_image, protocol::ErrorCode::RecognitionTimeout);
+                batch_failed = true; break;
+            }
+            if (result_status == static_cast<uint8_t>(protocol::StatusCode::Ok)) ++ok_count;
+            else if (result_status == static_cast<uint8_t>(protocol::StatusCode::Unknown)) ++unknown_count;
+            else ++failed_count;
+            esp_task_wdt_reset();
+        }
+
+        if (batch_failed) continue;
+        frame.reset();
+        ESP_LOGI(TAG, "face_batch_complete request=%lu faces=%u ok=%lu unknown=%lu failed=%lu",
+                 static_cast<unsigned long>(r.request_id), static_cast<unsigned>(face_count),
+                 static_cast<unsigned long>(ok_count), static_cast<unsigned long>(unknown_count),
+                 static_cast<unsigned long>(failed_count));
+        transition(SystemState::Completed, r, current_image); transition(SystemState::Idle, r, current_image);
         triggers_.complete(); board::set_status_led(false); board::log_memory("request_complete"); esp_task_wdt_reset();
     }
 }
 
-bool SystemController::await_result(const CaptureRequest& r, uint32_t image) {
+bool SystemController::await_result(const CaptureRequest& r, uint32_t image,
+                                    uint16_t face_index, uint16_t face_count, uint8_t& result_status) {
     const int64_t deadline = esp_timer_get_time() + 15'000'000;
     while (esp_timer_get_time() < deadline) {
         RxPacket p{}; TickType_t wait = pdMS_TO_TICKS(std::min<int64_t>(1000, (deadline - esp_timer_get_time()) / 1000));
-        if (xQueueReceive(result_queue_, &p, wait) != pdTRUE) continue;
+        if (xQueueReceive(result_queue_, &p, wait) != pdTRUE) { esp_task_wdt_reset(); continue; }
         protocol::PacketHeader h{}; const uint8_t* payload{};
-        if (protocol::decode_packet(p.data, p.length, h, payload) != protocol::DecodeStatus::Ok || h.message_type != protocol::MessageType::RecognitionResult) continue;
-        if (h.request_id != r.request_id || h.image_id != image) { ESP_LOGW(TAG, "stale recognition result request=%lu image=%lu", static_cast<unsigned long>(h.request_id), static_cast<unsigned long>(h.image_id)); continue; }
+        if (protocol::decode_packet(p.data, p.length, h, payload) != protocol::DecodeStatus::Ok || h.message_type != protocol::MessageType::RecognitionResult) {
+            esp_task_wdt_reset(); continue;
+        }
+        if (h.request_id != r.request_id || h.image_id != image) {
+            ESP_LOGW(TAG, "stale recognition result request=%lu image=%lu", static_cast<unsigned long>(h.request_id), static_cast<unsigned long>(h.image_id));
+            esp_task_wdt_reset(); continue;
+        }
         if (h.payload_length < 12) return false;
         const uint8_t status = payload[0], person_id_len = payload[1], name_len = payload[2];
-        if (12U + person_id_len + name_len > h.payload_length) return false;
+        if (status > static_cast<uint8_t>(protocol::StatusCode::Failed) ||
+            12U + person_id_len + name_len > h.payload_length) return false;
         char person_id[33]{}, name[65]{}; std::memcpy(person_id, payload + 12, std::min<size_t>(person_id_len, 32));
         std::memcpy(name, payload + 12 + person_id_len, std::min<size_t>(name_len, 64));
         const float similarity = read_float(payload + 4); uint32_t processing_ms = 0; std::memcpy(&processing_ms, payload + 8, 4);
-        ESP_LOGI(TAG, "recognition_result status=%u person_id=%s name=%s similarity=%.4f processing_ms=%lu",
-                 status, person_id, board::LOG_PERSON_NAME ? name : "<redacted>", similarity, static_cast<unsigned long>(processing_ms)); return true;
+        ESP_LOGI(TAG, "recognition_result face=%u/%u image=%lu status=%u person_id=%s name=%s "
+                      "similarity=%.4f processing_ms=%lu",
+                 static_cast<unsigned>(face_index + 1U), static_cast<unsigned>(face_count),
+                 static_cast<unsigned long>(image), status, person_id,
+                 board::LOG_PERSON_NAME ? name : "<redacted>", similarity,
+                 static_cast<unsigned long>(processing_ms));
+        result_status = status; esp_task_wdt_reset(); return true;
     }
     return false;
 }

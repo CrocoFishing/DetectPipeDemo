@@ -32,7 +32,8 @@ private:
     void enqueue_rx(const uint8_t* data, size_t length);
     void transition(SystemState state, const CaptureRequest& request, uint32_t image_id);
     void recover(const CaptureRequest& request, uint32_t image_id, protocol::ErrorCode error);
-    bool await_result(const CaptureRequest& request, uint32_t image_id);
+    bool await_result(const CaptureRequest& request, uint32_t image_id,
+                      uint16_t face_index, uint16_t face_count, uint8_t& result_status);
 
     MetricsService metrics_{6}; BleTransport ble_{metrics_}; TriggerService triggers_;
     CameraService camera_; FaceDetectionService detector_; ReusableImageBuffers buffers_; StateMachine state_;
