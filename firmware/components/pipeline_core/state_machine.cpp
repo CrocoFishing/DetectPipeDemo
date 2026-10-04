@@ -11,13 +11,13 @@ const StatePolicy& state_policy(SystemState s) {
         {15000,false,"boot and initialize modules","IDLE","ERROR_RECOVERY","reinitialize failing module or reboot on fatal"},
         {0,true,"wait on CaptureRequest queue","CAPTURING","IDLE","none"},
         {4000,false,"acquire camera frame (esp32-camera bounded wait)","DETECTING","ERROR_RECOVERY","return frame; camera reinitialize"},
-        {6000,false,"run fixed face detector","CROPPING/NO_FACE","ERROR_RECOVERY","return frame; detector reload"},
-        {1000,false,"expand 12.5% per side, clamp, copy","ENCODING","ERROR_RECOVERY","release crop slot"},
+        {6000,false,"run fixed face detector with bounded recapture/final rotation fallback","CROPPING/CAPTURING/NO_FACE","ERROR_RECOVERY","return frame; detector reload"},
+        {1000,false,"sort faces by area, expand/clamp, copy current face","ENCODING","ERROR_RECOVERY","release crop slot"},
         {3000,false,"JPEG encode at centralized quality","TRANSMITTING","ERROR_RECOVERY","release JPEG slot"},
         {15000,false,"send begin/chunks/end with backpressure","WAITING_RESULT","ERROR_RECOVERY","abort transfer and reclaim all buffers"},
-        {15000,false,"validate recognition response IDs","COMPLETED","ERROR_RECOVERY","report timeout/stale result"},
-        {250,false,"log result and metrics","IDLE","ERROR_RECOVERY","release request ownership"},
-        {250,false,"emit NO_FACE","IDLE","ERROR_RECOVERY","release frame and request"},
+        {15000,false,"validate current face recognition response IDs","CROPPING/COMPLETED","ERROR_RECOVERY","report timeout/stale result"},
+        {250,false,"log face-batch result and metrics","IDLE","ERROR_RECOVERY","release request ownership"},
+        {250,false,"emit NO_FACE after all configured attempts","IDLE","ERROR_RECOVERY","release frame and request"},
         {3000,false,"release owned buffers and reset module","IDLE","INITIALIZING","module-specific recovery; reboot only if fatal"},
     };
     return p[static_cast<unsigned>(s)];

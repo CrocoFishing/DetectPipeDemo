@@ -38,7 +38,7 @@ void TriggerService::trigger_task() {
         ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
         vTaskDelay(pdMS_TO_TICKS(board::EXTERNAL_TRIGGER_DEBOUNCE_MS));
         if (gpio_get_level(board::EXTERNAL_TRIGGER_GPIO) != board::EXTERNAL_TRIGGER_ACTIVE_LEVEL) continue;
-        CaptureRequest r{0x80000000U | (generated_counter_++ & 0x7FFFFFFFU), TriggerSource::ExternalButton, esp_timer_get_time()};
+        CaptureRequest r{next_generated_id(), TriggerSource::ExternalButton, esp_timer_get_time()};
         SubmitResult result = submit(r);
         ESP_LOGI(TAG, "button request_id=%lu result=%d source=EXTERNAL_BUTTON", static_cast<unsigned long>(r.request_id), static_cast<int>(result));
         if (observer_) observer_(r, result, observer_context_);
@@ -52,6 +52,7 @@ bool TriggerService::duplicate(uint32_t id) {
     recent_ids_[recent_pos_++ % 8] = id; return false;
 }
 SubmitResult TriggerService::submit(const CaptureRequest& r) {
+    if (!queue_) return SubmitResult::Busy;
     portENTER_CRITICAL(&mux_);
     if (busy_) { portEXIT_CRITICAL(&mux_); return SubmitResult::Busy; }
     if (duplicate(r.request_id)) { portEXIT_CRITICAL(&mux_); return SubmitResult::Duplicate; }
@@ -62,6 +63,20 @@ SubmitResult TriggerService::submit(const CaptureRequest& r) {
 SubmitResult TriggerService::submit_ble(uint32_t id) {
     if (id == 0 || (id & 0x80000000U)) return SubmitResult::InvalidClientId;
     return submit({id, TriggerSource::BleClient, esp_timer_get_time()});
+}
+uint32_t TriggerService::next_generated_id() {
+    portENTER_CRITICAL(&mux_);
+    const uint32_t id = 0x80000000U | (generated_counter_++ & 0x7FFFFFFFU);
+    portEXIT_CRITICAL(&mux_);
+    return id;
+}
+SubmitResult TriggerService::submit_event(uint64_t event_id, uint32_t& request_id) {
+    request_id = 0;
+    if (event_id == 0) return SubmitResult::InvalidClientId;
+    CaptureRequest request{next_generated_id(), TriggerSource::EventVad, esp_timer_get_time(), true, event_id};
+    const SubmitResult result = submit(request);
+    if (result == SubmitResult::Accepted) request_id = request.request_id;
+    return result;
 }
 bool TriggerService::receive(CaptureRequest& r, TickType_t wait) { return xQueueReceive(queue_, &r, wait) == pdTRUE; }
 void TriggerService::complete() { portENTER_CRITICAL(&mux_); busy_ = false; active_image_id_ = 0; active_state_ = SystemState::Idle; portEXIT_CRITICAL(&mux_); }

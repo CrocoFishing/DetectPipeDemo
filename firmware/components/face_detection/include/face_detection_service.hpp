@@ -22,11 +22,10 @@ public:
     ~FaceDetectionService();
     esp_err_t initialize();
     esp_err_t detect(const camera_fb_t& frame, std::vector<FaceBox>& results);
-    static bool select_largest(const std::vector<FaceBox>& results, FaceBox& largest);
+    static void sort_largest_first(std::vector<FaceBox>& results);
     static FaceBox expand_and_clamp(const FaceBox& box, int frame_width, int frame_height);
     bool loaded() const { return detector_ != nullptr; }
 private:
     HumanFaceDetect* detector_{nullptr};
 };
 }  // namespace demo
-

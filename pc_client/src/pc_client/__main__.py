@@ -8,7 +8,7 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from .ble_client import BleFaceSession, append_metrics_csv, scan_devices
+from .ble_client import BleFaceSession, ReceivedFaceImage, append_metrics_csv, scan_devices
 from .database import FaceDatabase
 from .protocol import StatusCode
 from .recognizer import recognize_embedding
@@ -20,6 +20,7 @@ if TYPE_CHECKING:
 def parser() -> argparse.ArgumentParser:
     root = argparse.ArgumentParser(prog="python -m pc_client")
     root.add_argument("--database", default="face_demo.db")
+    root.add_argument("--event-database", default="event_store.db")
     root.add_argument("--model", default="buffalo_l")
     root.add_argument("--threshold", type=float, default=0.45)
     root.add_argument("--verbose", action="store_true")
@@ -58,44 +59,78 @@ async def run_client(args: argparse.Namespace) -> None:
     database = FaceDatabase(args.database)
     session: BleFaceSession
 
-    async def on_image(request_id: int, image_id: int, jpeg: bytes) -> None:
+    async def on_image(image: ReceivedFaceImage) -> None:
         started = time.perf_counter()
         try:
-            vector = face_engine.embedding_from_bytes(jpeg)
+            vector = face_engine.embedding_from_bytes(image.jpeg)
             found = recognize_embedding(vector, database, args.model, args.threshold)
+            status = found.status
+            person_id = found.person_id
+            person_name = found.person_name
+            similarity = found.similarity
         except Exception as exc:
             logging.exception("recognition failed")
+            status = StatusCode.FAILED
+            person_id = ""
+            person_name = str(exc)[:64]
+            similarity = 0.0
+        processing_time_ms = int((time.perf_counter() - started) * 1000)
+        try:
             await session.send_recognition_result(
-                request_id, image_id, StatusCode.FAILED, "", str(exc)[:64], 0, 0
+                image.request_id,
+                image.image_id,
+                status,
+                person_id,
+                person_name,
+                similarity,
+                processing_time_ms,
+                event_id=image.event_id,
             )
+        except Exception:
+            logging.exception("result delivery failed; EventStore retains recognition")
             return
-        await session.send_recognition_result(
-            request_id,
-            image_id,
-            found.status,
-            found.person_id,
-            found.person_name,
-            found.similarity,
-            int((time.perf_counter() - started) * 1000),
+        logging.info(
+            "face_result request_id=%d image_id=%d face=%d/%d status=%s person_id=%s "
+            "name=%s similarity=%.4f processing_ms=%d",
+            image.request_id,
+            image.image_id,
+            image.face_index + 1,
+            image.face_count,
+            status.name,
+            person_id,
+            person_name,
+            similarity,
+            processing_time_ms,
         )
+        summary = session.complete_face(image, status)
+        if summary:
+            logging.info(
+                "face_batch_complete request_id=%d faces=%d ok=%d unknown=%d failed=%d",
+                summary.request_id,
+                summary.face_count,
+                summary.ok_count,
+                summary.unknown_count,
+                summary.failed_count,
+            )
 
-    session = BleFaceSession(args.device_name, on_image)
-    await session.connect()
-    if not args.wait_only:
-        await session.start_capture(1)
+    session = BleFaceSession(args.device_name, on_image, event_database=args.event_database)
     try:
+        await session.connect()
+        if not args.wait_only:
+            await session.start_capture(1)
         while True:
             await asyncio.sleep(1)
     finally:
         database.close()
         await session.disconnect()
+        session.close()
 
 
 async def ble_test(args: argparse.Namespace) -> None:
     sizes = [int(value) * 1000 for value in args.sizes_kb.split(",")]
-    session = BleFaceSession(args.device_name)
-    await session.connect()
+    session = BleFaceSession(args.device_name, event_database=args.event_database)
     try:
+        await session.connect()
         request_id = 100
         for size in sizes:
             for _ in range(args.repeat):
@@ -106,6 +141,7 @@ async def ble_test(args: argparse.Namespace) -> None:
                 await asyncio.sleep(1)
     finally:
         await session.disconnect()
+        session.close()
 
 
 def main() -> None:

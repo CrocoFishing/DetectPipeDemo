@@ -1,6 +1,6 @@
 # Reproducible Dependencies
 
-Validated on 2026-08-01.
+Baseline dependency record follows. Event 1 integration, built on 2026-10-04, pins ESP-SR 2.5.3 and ESP-DL 3.3.11 because ESP-SR requires ESP-DL >=3.3.10; the detector wrapper and selected XGA / ESPDet configuration remain the same. The integrated app's generated `firmware/apps/event1_audio_face/dependencies.lock` records the exact resolved hashes. Legacy offline regression builds use the cached baseline ESP-DL 3.3.9 packages; a fresh normal build follows the updated 3.3.11 manifest.
 
 | Dependency | Version/tag | Commit or component SHA-256 | Role |
 |---|---|---|---|
@@ -25,4 +25,4 @@ powershell.exe -ExecutionPolicy Bypass -File .\tools\create_python_venv.ps1
 .\pc_client\.venv\Scripts\python.exe -m pip install -e .\pc_client
 ```
 
-Known constraints: ESP-IDF must be in `C:\esp\v6.0\esp-idf` with the specified PowerShell profile, flash/PSRAM are configured for the XIAO S3 Sense 8 MB device, the model pack requires a large app partition, protocol packets require ATT MTU at least 36 bytes, and InsightFace model weights download separately on first use and have their own license terms.
+Known constraints: ESP-IDF must be in `C:\esp\v6.0\esp-idf` with the specified PowerShell profile, flash/PSRAM are configured for the XIAO S3 Sense 8 MB device, the model pack requires a large app partition, Event v2 messages require ATT MTU at least 67 bytes (image header alone: 36), and InsightFace model weights download separately on first use and have their own license terms.

@@ -71,8 +71,11 @@ size_t BleTransport::chunk_payload_size() const {
 esp_err_t BleTransport::initialize(BlePacketHandler control, BlePacketHandler result, void* context) {
     instance = this; control_handler_ = control; result_handler_ = result; handler_context_ = context;
     esp_err_t err = nvs_flash_init();
-    if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) { ESP_ERROR_CHECK(nvs_flash_erase()); err = nvs_flash_init(); }
-    ESP_RETURN_ON_ERROR(err, TAG, "NVS init failed"); ESP_RETURN_ON_ERROR(nimble_port_init(), TAG, "NimBLE init failed");
+    // NVS owns the persistent Event boot counter. Automatic erasure could reuse Event IDs.
+    ESP_RETURN_ON_ERROR(err, TAG, "NVS init failed; preserve persistent Event identity");
+    event_mutex_ = xSemaphoreCreateMutex();
+    ESP_RETURN_ON_FALSE(event_mutex_, ESP_ERR_NO_MEM, TAG, "event notification mutex unavailable");
+    ESP_RETURN_ON_ERROR(nimble_port_init(), TAG, "NimBLE init failed");
     ble_hs_cfg.sync_cb = on_sync; ble_hs_cfg.reset_cb = [](int reason) { ESP_LOGE(TAG, "NimBLE reset reason=%d", reason); };
     ble_hs_cfg.store_status_cb = ble_store_util_status_rr;
     ble_hs_cfg.sm_bonding = board::BLE_REQUIRE_PAIRING;
@@ -132,14 +135,22 @@ int BleTransport::gatt_access(uint16_t, uint16_t attr, ble_gatt_access_ctxt* ctx
         if (handler) handler(data, length, instance->handler_context_);
         return 0;
     }
-    if (ctxt->op == BLE_GATT_ACCESS_OP_READ_CHR && attr == event_handle)
-        return os_mbuf_append(ctxt->om, instance->last_event_, instance->last_event_length_) == 0 ? 0 : BLE_ATT_ERR_INSUFFICIENT_RES;
+    if (ctxt->op == BLE_GATT_ACCESS_OP_READ_CHR && attr == event_handle) {
+        // Do not block the NimBLE host on the notification mutex: retrying sends need this host.
+        uint8_t last_event[MAX_PACKET];
+        portENTER_CRITICAL(&instance->last_event_mux_);
+        const size_t length = instance->last_event_length_;
+        std::memcpy(last_event, instance->last_event_, length);
+        portEXIT_CRITICAL(&instance->last_event_mux_);
+        return os_mbuf_append(ctxt->om, last_event, static_cast<uint16_t>(length)) == 0 ? 0 : BLE_ATT_ERR_INSUFFICIENT_RES;
+    }
     if (ctxt->op == BLE_GATT_ACCESS_OP_READ_CHR && attr == device_info_handle) {
         char info[192];
         int n = snprintf(info, sizeof(info),
-            "protocol=1;firmware=%s;build=%s;model=%s;max_image=%u;features=0x1f",
-            board::FIRMWARE_VERSION, board::BUILD_ID, board::DETECTOR_MODEL_NAME,
-            static_cast<unsigned>(board::MAX_JPEG_BYTES));
+            "protocol=%u;firmware=%s;build=%s;model=%s;max_image=%u;features=0x%lx",
+            static_cast<unsigned>(protocol::VERSION), board::FIRMWARE_VERSION, board::BUILD_ID, board::DETECTOR_MODEL_NAME,
+            static_cast<unsigned>(board::MAX_JPEG_BYTES),
+            static_cast<unsigned long>(0x1fU | (instance->event_association_enabled_ ? protocol::EventAssociation : 0U)));
         const size_t info_length = std::min<size_t>(sizeof(info) - 1, static_cast<size_t>(std::max(0, n)));
         return os_mbuf_append(ctxt->om, info, static_cast<uint16_t>(info_length)) == 0 ? 0 : BLE_ATT_ERR_INSUFFICIENT_RES;
     }
@@ -181,31 +192,57 @@ esp_err_t BleTransport::notify(uint16_t handle, const uint8_t* data, size_t len)
     return ESP_ERR_INVALID_STATE;
 }
 esp_err_t BleTransport::make_and_notify(uint16_t handle, protocol::PacketHeader h, const uint8_t* payload) {
-    if (h.payload_length + protocol::HEADER_SIZE > MAX_PACKET) return ESP_ERR_INVALID_SIZE;
+    if (h.payload_length > MAX_PACKET - protocol::HEADER_SIZE) return ESP_ERR_INVALID_SIZE;
+    if (h.payload_length && !payload) return ESP_ERR_INVALID_ARG;
     uint8_t packet[MAX_PACKET]; h.crc32 = protocol::crc32(payload, h.payload_length);
     protocol::encode_header(h, packet, sizeof(packet)); if (h.payload_length) std::memcpy(packet + protocol::HEADER_SIZE, payload, h.payload_length);
-    if (handle == event_handle) { last_event_length_ = std::min<size_t>(sizeof(last_event_), protocol::HEADER_SIZE + h.payload_length); std::memcpy(last_event_, packet, last_event_length_); }
+    if (handle == event_handle) {
+        portENTER_CRITICAL(&last_event_mux_);
+        last_event_length_ = protocol::HEADER_SIZE + h.payload_length;
+        std::memcpy(last_event_, packet, last_event_length_);
+        portEXIT_CRITICAL(&last_event_mux_);
+    }
     return notify(handle, packet, protocol::HEADER_SIZE + h.payload_length);
 }
 esp_err_t BleTransport::send_event(protocol::MessageType type, uint32_t request, uint32_t image, const uint8_t* payload, size_t len, uint16_t flags, uint32_t reserved) {
-    if (!connected_) return ESP_ERR_INVALID_STATE;
-    if (!event_subscribed_) return ESP_ERR_NOT_FOUND;
-    if (protocol::HEADER_SIZE + len > negotiated_mtu_ - ATT_OVERHEAD) return ESP_ERR_INVALID_SIZE;
+    if (!event_mutex_ || !connected_) return ESP_ERR_INVALID_STATE;
+    if (len > MAX_PACKET - protocol::HEADER_SIZE) return ESP_ERR_INVALID_SIZE;
+    if (len && !payload) return ESP_ERR_INVALID_ARG;
+    if (xSemaphoreTake(event_mutex_, pdMS_TO_TICKS(600)) != pdTRUE) return ESP_ERR_TIMEOUT;
+    if (!connected_ || !event_subscribed_) {
+        xSemaphoreGive(event_mutex_);
+        return connected_ ? ESP_ERR_NOT_FOUND : ESP_ERR_INVALID_STATE;
+    }
+    if (negotiated_mtu_ < ATT_OVERHEAD + protocol::HEADER_SIZE ||
+        protocol::HEADER_SIZE + len > negotiated_mtu_ - ATT_OVERHEAD) {
+        xSemaphoreGive(event_mutex_); return ESP_ERR_INVALID_SIZE;
+    }
     protocol::PacketHeader h{}; h.message_type = type; h.request_id = request; h.image_id = image; h.flags = flags; h.reserved = reserved; h.payload_length = len;
-    return make_and_notify(event_handle, h, payload);
+    const esp_err_t result = make_and_notify(event_handle, h, payload);
+    xSemaphoreGive(event_mutex_);
+    return result;
 }
 void BleTransport::sample_rssi(uint32_t image, int64_t now) {
     if (now - last_rssi_us_ < 1'000'000 || connection_handle_ == NO_CONNECTION) return;
     int8_t rssi = 0; if (ble_gap_conn_rssi(connection_handle_, &rssi) == 0) { metrics_.add_rssi(rssi); metrics_.emit(image, "rssi_current_dbm", rssi, "dBm"); }
     last_rssi_us_ = now;
 }
-esp_err_t BleTransport::send_image(uint32_t request, uint32_t image, const uint8_t* jpeg, size_t len) {
+esp_err_t BleTransport::send_image(uint32_t request, uint32_t image, const uint8_t* jpeg, size_t len,
+                                   uint16_t face_index, uint16_t face_count) {
     if (!connected_) return ESP_ERR_INVALID_STATE;
     if (!image_subscribed_) return ESP_ERR_NOT_FOUND;
     const size_t chunk = chunk_payload_size(); if (!chunk || !jpeg || !len || len > board::MAX_JPEG_BYTES) return ESP_ERR_INVALID_SIZE;
+    if ((!face_count && face_index) || (face_count && face_index >= face_count)) return ESP_ERR_INVALID_ARG;
+    const uint16_t sequence_flags = face_count
+        ? static_cast<uint16_t>(protocol::MessageFlag::FaceSequence)
+        : 0;
+    const uint32_t sequence_metadata = face_count
+        ? (static_cast<uint32_t>(face_count) << 16) | face_index
+        : 0;
     const uint16_t total = static_cast<uint16_t>((len + chunk - 1) / chunk); const uint32_t image_crc = protocol::crc32(jpeg, len);
     uint8_t meta[8]; for (int i=0;i<4;++i) { meta[i]=static_cast<uint8_t>(len>>(8*i)); meta[4+i]=static_cast<uint8_t>(image_crc>>(8*i)); }
-    esp_err_t err = send_event(protocol::MessageType::ImageBegin, request, image, meta, sizeof(meta)); if (err != ESP_OK) return err;
+    esp_err_t err = send_event(protocol::MessageType::ImageBegin, request, image, meta, sizeof(meta),
+                               sequence_flags, sequence_metadata); if (err != ESP_OK) return err;
     transferring_ = true; metrics_.reset_rssi(); const int64_t started = esp_timer_get_time();
     for (uint16_t i = 0; i < total && connected_; ++i) {
         if (esp_timer_get_time() - started > 15'000'000) { err = ESP_ERR_TIMEOUT; break; }
@@ -216,7 +253,11 @@ esp_err_t BleTransport::send_image(uint32_t request, uint32_t image, const uint8
         sample_rssi(image, esp_timer_get_time()); vTaskDelay(1);
     }
     transferring_ = false;
-    if (err == ESP_OK && connected_) err = send_event(protocol::MessageType::ImageEnd, request, image, meta, sizeof(meta));
+    if (!connected_) err = ESP_ERR_INVALID_STATE;
+    if (err == ESP_OK && connected_) {
+        err = send_event(protocol::MessageType::ImageEnd, request, image, meta, sizeof(meta),
+                         sequence_flags, sequence_metadata);
+    }
     const double ms = (esp_timer_get_time() - started) / 1000.0;
     metrics_.emit(image, "ble_transfer_ms", ms, "ms"); metrics_.emit(image, "image_bytes", len, "bytes");
     metrics_.emit(image, "chunk_count", total, "count"); metrics_.emit(image, "application_throughput", ms > 0 ? len * 8.0 / ms : 0, "kbps");

@@ -4,7 +4,15 @@ import struct
 import time
 from dataclasses import dataclass, field
 
-from .protocol import MessageType, Packet, ProtocolError, crc32
+from .protocol import (
+    MessageFlag,
+    MessageType,
+    Packet,
+    ProtocolError,
+    crc32,
+    pack_face_sequence,
+    unpack_face_sequence,
+)
 
 
 @dataclass(slots=True)
@@ -12,6 +20,8 @@ class ImageAssembler:
     timeout_s: float = 15.0
     request_id: int = 0
     image_id: int = 0
+    face_index: int = 0
+    face_count: int = 1
     expected_bytes: int = 0
     expected_crc32: int = 0
     total_chunks: int = 0
@@ -20,12 +30,15 @@ class ImageAssembler:
     duplicated_sequence_count: int = 0
     out_of_order_count: int = 0
     _next_sequence: int = 0
+    _face_sequence_flagged: bool = False
 
     def begin(self, packet: Packet) -> None:
         if packet.header.message_type is not MessageType.IMAGE_BEGIN or len(packet.payload) != 8:
             raise ProtocolError("invalid IMAGE_BEGIN")
         self.request_id = packet.header.request_id
         self.image_id = packet.header.image_id
+        self._face_sequence_flagged = bool(packet.header.flags & MessageFlag.FACE_SEQUENCE)
+        self.face_index, self.face_count = unpack_face_sequence(packet.header)
         self.expected_bytes, self.expected_crc32 = struct.unpack("<II", packet.payload)
         self.total_chunks = 0
         self.started_at = time.monotonic()
@@ -63,6 +76,11 @@ class ImageAssembler:
             raise ProtocolError("invalid IMAGE_END")
         if packet.header.request_id != self.request_id or packet.header.image_id != self.image_id:
             raise ProtocolError("incorrect IMAGE_END ids")
+        end_flagged = bool(packet.header.flags & MessageFlag.FACE_SEQUENCE)
+        if end_flagged != self._face_sequence_flagged:
+            raise ProtocolError("IMAGE_END face sequence flag mismatch")
+        if unpack_face_sequence(packet.header) != (self.face_index, self.face_count):
+            raise ProtocolError("IMAGE_END face sequence metadata mismatch")
         if self.expired():
             raise TimeoutError("image reassembly timeout")
         end_bytes, end_crc = struct.unpack("<II", packet.payload)
@@ -86,13 +104,31 @@ class ImageAssembler:
 
 
 def make_image_packets(
-    data: bytes, request_id: int, image_id: int, chunk_size: int
+    data: bytes,
+    request_id: int,
+    image_id: int,
+    chunk_size: int,
+    *,
+    face_index: int | None = None,
+    face_count: int | None = None,
 ) -> tuple[Packet, list[Packet], Packet]:
     from .protocol import decode_packet, make_packet
 
+    if (face_index is None) != (face_count is None):
+        raise ValueError("face_index and face_count must be provided together")
+    flags, reserved = (0, 0)
+    if face_index is not None and face_count is not None:
+        flags, reserved = pack_face_sequence(face_index, face_count)
     metadata = struct.pack("<II", len(data), crc32(data))
     begin = decode_packet(
-        make_packet(MessageType.IMAGE_BEGIN, request_id=request_id, image_id=image_id, payload=metadata)
+        make_packet(
+            MessageType.IMAGE_BEGIN,
+            request_id=request_id,
+            image_id=image_id,
+            payload=metadata,
+            flags=flags,
+            reserved=reserved,
+        )
     )
     count = (len(data) + chunk_size - 1) // chunk_size
     chunks = [
@@ -109,6 +145,13 @@ def make_image_packets(
         for i in range(count)
     ]
     end = decode_packet(
-        make_packet(MessageType.IMAGE_END, request_id=request_id, image_id=image_id, payload=metadata)
+        make_packet(
+            MessageType.IMAGE_END,
+            request_id=request_id,
+            image_id=image_id,
+            payload=metadata,
+            flags=flags,
+            reserved=reserved,
+        )
     )
     return begin, chunks, end

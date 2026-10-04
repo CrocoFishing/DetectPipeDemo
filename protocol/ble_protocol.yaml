@@ -1,12 +1,13 @@
 protocol:
-  name: esp32s3-face-demo
-  version: 1
+  name: event-pipe-demo
+  version: 2
   magic: 0x45434146
   magic_ascii_on_wire: FACE
   byte_order: little
   string_encoding: utf-8
   header_length: 32
   minimum_att_mtu: 36
+  minimum_event_att_mtu: 67
   maximum_image_bytes: 163840
 uuids:
   service: 7f510000-b7b2-4f6a-9f3a-6c8a2d7e1000
@@ -36,6 +37,10 @@ message_types:
   ERROR: 12
   PING: 13
   PONG: 14
+  EVENT_OPEN: 15
+  EVENT_AUDIO_READY: 16
+  FACE_BATCH_END: 17
+  EVENT_COMPLETE: 18
 commands:
   START_CAPTURE: 1
 status_codes:
@@ -43,6 +48,26 @@ status_codes:
   UNKNOWN: 1
   NO_FACE: 2
   FAILED: 3
+trigger_sources:
+  EVENT1: 3
+audio_statuses:
+  PENDING: 0
+  READY: 1
+  FAILED: 2
+face_statuses:
+  PENDING: 0
+  COMPLETED: 1
+  NO_FACE: 2
+  PARTIAL: 3
+  BUSY: 4
+  TIMEOUT: 5
+  DISCONNECTED: 6
+  FAILED: 7
+event_statuses:
+  COMPLETE: 0
+  COMPLETE_WITH_ERROR: 1
+message_flags:
+  FACE_SEQUENCE: 0x0001
 error_codes:
   NONE: 0
   INVALID_PACKET: 1
@@ -73,6 +98,7 @@ feature_flags:
   FACE_DETECTION: 0x00000004
   CROPPED_JPEG: 0x00000008
   RSSI_METRICS: 0x00000010
+  EVENT_ASSOCIATION: 0x00000020
 header_fields:
   - {name: magic, type: uint32, offset: 0, length: 4}
   - {name: protocol_version, type: uint8, offset: 4, length: 1}
@@ -86,12 +112,55 @@ header_fields:
   - {name: crc32, type: uint32, offset: 24, length: 4}
   - {name: reserved, type: uint32, offset: 28, length: 4}
 payloads:
+  EVENT_OPEN:
+    length: 16
+    python_struct: '<QB7x'
+    header_metadata: {image_id: 0, request_id: associated_request_or_zero, reserved: 0}
+    fields:
+      - {name: event_id, type: uint64, offset: 0, length: 8}
+      - {name: trigger_type, type: uint8, offset: 8, length: 1}
+      - {name: reserved, type: bytes, offset: 9, length: 7, value: 0}
+  EVENT_AUDIO_READY:
+    length: 32
+    python_struct: '<QB7xQQ'
+    fields:
+      - {name: event_id, type: uint64, offset: 0, length: 8}
+      - {name: audio_status, type: uint8, offset: 8, length: 1}
+      - {name: reserved, type: bytes, offset: 9, length: 7, value: 0}
+      - {name: audio_first_sample, type: uint64, offset: 16, length: 8}
+      - {name: audio_last_sample, type: uint64, offset: 24, length: 8}
+  FACE_BATCH_END:
+    length: 32
+    python_struct: '<QIHHHHHB9x'
+    fields:
+      - {name: event_id, type: uint64, offset: 0, length: 8}
+      - {name: request_id, type: uint32, offset: 8, length: 4}
+      - {name: expected_face_count, type: uint16, offset: 12, length: 2}
+      - {name: completed_face_count, type: uint16, offset: 14, length: 2}
+      - {name: recognized_count, type: uint16, offset: 16, length: 2}
+      - {name: unknown_count, type: uint16, offset: 18, length: 2}
+      - {name: failed_count, type: uint16, offset: 20, length: 2}
+      - {name: face_status, type: uint8, offset: 22, length: 1}
+      - {name: reserved, type: bytes, offset: 23, length: 9, value: 0}
+  EVENT_COMPLETE:
+    length: 16
+    python_struct: '<QBBB5x'
+    fields:
+      - {name: event_id, type: uint64, offset: 0, length: 8}
+      - {name: event_status, type: uint8, offset: 8, length: 1}
+      - {name: audio_status, type: uint8, offset: 9, length: 1}
+      - {name: face_status, type: uint8, offset: 10, length: 1}
+      - {name: reserved, type: bytes, offset: 11, length: 5, value: 0}
   START_CAPTURE:
     fields:
       - {name: command, type: uint16, length: 2}
       - {name: reserved, type: uint16, length: 2}
       - {name: client_timestamp_s, type: uint32, length: 4}
   IMAGE_BEGIN_END:
+    header_metadata:
+      face_sequence_flag: FACE_SEQUENCE
+      face_index: reserved[15:0]
+      face_count: reserved[31:16]
     fields:
       - {name: image_bytes, type: uint32, length: 4}
       - {name: image_crc32, type: uint32, length: 4}
@@ -122,3 +191,8 @@ compatibility:
   unknown_message: reject
   unsupported_major_version: reject
   added_message_type: older peers_must_ignore_only_if_optional_flag_set
+  face_sequence_absent: {face_index: 0, face_count: 1}
+  event_request_zero: no_accepted_face_request_do_not_bind_globally
+  event_id_storage: uppercase_16_hex_digits
+  request_image_ownership_scope: event_id_upper_32_bit_boot_session
+  event_messages_reserved: zero

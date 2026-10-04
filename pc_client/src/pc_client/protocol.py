@@ -6,7 +6,7 @@ import zlib
 from dataclasses import dataclass
 
 MAGIC = 0x45434146
-VERSION = 1
+VERSION = 2
 HEADER_FORMAT = "<IBBHIIIHHII"
 HEADER_SIZE = struct.calcsize(HEADER_FORMAT)
 SERVICE_UUID = "7f510000-b7b2-4f6a-9f3a-6c8a2d7e1000"
@@ -40,6 +40,14 @@ class MessageType(enum.IntEnum):
     ERROR = 12
     PING = 13
     PONG = 14
+    EVENT_OPEN = 15
+    EVENT_AUDIO_READY = 16
+    FACE_BATCH_END = 17
+    EVENT_COMPLETE = 18
+
+
+class MessageFlag(enum.IntFlag):
+    FACE_SEQUENCE = 0x0001
 
 
 class Command(enum.IntEnum):
@@ -51,6 +59,175 @@ class StatusCode(enum.IntEnum):
     UNKNOWN = 1
     NO_FACE = 2
     FAILED = 3
+
+
+class TriggerSource(enum.IntEnum):
+    EVENT1 = 3
+
+
+class AudioStatus(enum.IntEnum):
+    PENDING = 0
+    READY = 1
+    FAILED = 2
+
+
+class FaceStatus(enum.IntEnum):
+    PENDING = 0
+    COMPLETED = 1
+    NO_FACE = 2
+    PARTIAL = 3
+    BUSY = 4
+    TIMEOUT = 5
+    DISCONNECTED = 6
+    FAILED = 7
+
+
+class EventStatus(enum.IntEnum):
+    COMPLETE = 0
+    COMPLETE_WITH_ERROR = 1
+
+
+EVENT_OPEN_FORMAT = "<QB7x"
+EVENT_AUDIO_READY_FORMAT = "<QB7xQQ"
+FACE_BATCH_END_FORMAT = "<QIHHHHHB9x"
+EVENT_COMPLETE_FORMAT = "<QBBB5x"
+
+
+def event_id_hex(event_id: int) -> str:
+    if not 0 < event_id <= 0xFFFFFFFFFFFFFFFF:
+        raise ProtocolError("event_id must be a nonzero uint64")
+    return f"{event_id:016X}"
+
+
+def _payload_values(payload: bytes, format_: str, padding_start: int, padding_end: int) -> tuple[int, ...]:
+    if len(payload) != struct.calcsize(format_):
+        raise ProtocolError("invalid event payload length")
+    if any(payload[padding_start:padding_end]):
+        raise ProtocolError("event reserved bytes must be zero")
+    return struct.unpack(format_, payload)
+
+
+@dataclass(frozen=True, slots=True)
+class EventOpen:
+    event_id: int
+    trigger_type: TriggerSource = TriggerSource.EVENT1
+
+    def encode(self) -> bytes:
+        event_id_hex(self.event_id)
+        return struct.pack(EVENT_OPEN_FORMAT, self.event_id, self.trigger_type)
+
+    @classmethod
+    def decode(cls, payload: bytes) -> EventOpen:
+        event_id, trigger = _payload_values(payload, EVENT_OPEN_FORMAT, 9, 16)
+        event_id_hex(event_id)
+        try:
+            return cls(event_id, TriggerSource(trigger))
+        except ValueError as exc:
+            raise ProtocolError("invalid event trigger") from exc
+
+
+@dataclass(frozen=True, slots=True)
+class EventAudioReady:
+    event_id: int
+    audio_status: AudioStatus
+    audio_first_sample: int
+    audio_last_sample: int
+
+    def encode(self) -> bytes:
+        return struct.pack(
+            EVENT_AUDIO_READY_FORMAT,
+            self.event_id,
+            self.audio_status,
+            self.audio_first_sample,
+            self.audio_last_sample,
+        )
+
+    @classmethod
+    def decode(cls, payload: bytes) -> EventAudioReady:
+        event_id, status, first, last = _payload_values(payload, EVENT_AUDIO_READY_FORMAT, 9, 16)
+        event_id_hex(event_id)
+        try:
+            audio = AudioStatus(status)
+        except ValueError as exc:
+            raise ProtocolError("invalid audio status") from exc
+        if audio is AudioStatus.PENDING or last < first:
+            raise ProtocolError("invalid terminal audio payload")
+        return cls(event_id, audio, first, last)
+
+
+@dataclass(frozen=True, slots=True)
+class FaceBatchEnd:
+    event_id: int
+    request_id: int
+    expected_face_count: int
+    completed_face_count: int
+    recognized_count: int
+    unknown_count: int
+    failed_count: int
+    face_status: FaceStatus
+
+    def encode(self) -> bytes:
+        return struct.pack(
+            FACE_BATCH_END_FORMAT,
+            self.event_id,
+            self.request_id,
+            self.expected_face_count,
+            self.completed_face_count,
+            self.recognized_count,
+            self.unknown_count,
+            self.failed_count,
+            self.face_status,
+        )
+
+    @classmethod
+    def decode(cls, payload: bytes) -> FaceBatchEnd:
+        values = _payload_values(payload, FACE_BATCH_END_FORMAT, 23, 32)
+        event_id_hex(values[0])
+        try:
+            status = FaceStatus(values[-1])
+        except ValueError as exc:
+            raise ProtocolError("invalid face status") from exc
+        _, _, expected, completed, recognized, unknown, failed, _ = values
+        if status is FaceStatus.PENDING or completed > expected or recognized + unknown + failed != completed:
+            raise ProtocolError("invalid terminal face counters")
+        if status is FaceStatus.COMPLETED and (completed != expected or failed):
+            raise ProtocolError("invalid completed face counters")
+        if status in (FaceStatus.NO_FACE, FaceStatus.BUSY) and (expected or completed):
+            raise ProtocolError("empty face status has nonzero counters")
+        return cls(values[0], values[1], expected, completed, recognized, unknown, failed, status)
+
+
+@dataclass(frozen=True, slots=True)
+class EventComplete:
+    event_id: int
+    event_status: EventStatus
+    audio_status: AudioStatus
+    face_status: FaceStatus
+
+    def encode(self) -> bytes:
+        return struct.pack(
+            EVENT_COMPLETE_FORMAT, self.event_id, self.event_status, self.audio_status, self.face_status
+        )
+
+    @classmethod
+    def decode(cls, payload: bytes) -> EventComplete:
+        event_id, event, audio, face = _payload_values(payload, EVENT_COMPLETE_FORMAT, 11, 16)
+        event_id_hex(event_id)
+        try:
+            value = cls(event_id, EventStatus(event), AudioStatus(audio), FaceStatus(face))
+        except ValueError as exc:
+            raise ProtocolError("invalid event completion status") from exc
+        if value.audio_status is AudioStatus.PENDING or value.face_status is FaceStatus.PENDING:
+            raise ProtocolError("event completed before both branches terminal")
+        expected = (
+            EventStatus.COMPLETE
+            if value.audio_status is AudioStatus.READY
+            and value.face_status in (FaceStatus.COMPLETED, FaceStatus.NO_FACE)
+            else EventStatus.COMPLETE_WITH_ERROR
+        )
+        if value.event_status is not expected:
+            raise ProtocolError("event completion status disagrees with branches")
+        return value
 
 
 class ErrorCode(enum.IntEnum):
@@ -128,6 +305,24 @@ class Packet:
             reserved=self.header.reserved,
         )
         return header.encode() + self.payload
+
+
+def pack_face_sequence(face_index: int, face_count: int) -> tuple[int, int]:
+    if not 0 < face_count <= 0xFFFF:
+        raise ValueError("face_count must be between 1 and 65535")
+    if not 0 <= face_index < face_count:
+        raise ValueError("face_index must be less than face_count")
+    return int(MessageFlag.FACE_SEQUENCE), (face_count << 16) | face_index
+
+
+def unpack_face_sequence(header: PacketHeader) -> tuple[int, int]:
+    if not header.flags & MessageFlag.FACE_SEQUENCE:
+        return 0, 1
+    face_index = header.reserved & 0xFFFF
+    face_count = (header.reserved >> 16) & 0xFFFF
+    if face_count == 0 or face_index >= face_count:
+        raise ProtocolError("invalid face sequence metadata")
+    return face_index, face_count
 
 
 def crc32(data: bytes) -> int:

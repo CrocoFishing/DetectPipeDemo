@@ -1,9 +1,15 @@
 [STATE] from=IDLE to=CAPTURING image_id=<id> trigger=EXTERNAL_BUTTON|BLE_CLIENT
 [STATE] from=CAPTURING to=DETECTING image_id=<id> trigger=<source>
-[STATE] from=DETECTING to=CROPPING image_id=<id> trigger=<source>
-[STATE] from=CROPPING to=ENCODING image_id=<id> trigger=<source>
-[STATE] from=ENCODING to=TRANSMITTING image_id=<id> trigger=<source>
-[STATE] from=TRANSMITTING to=WAITING_RESULT image_id=<id> trigger=<source>
-I system_controller: recognition_result status=<0|1> person_id=<stable-id> name=<name-or-redacted> similarity=<actual> processing_ms=<actual>
-[STATE] from=COMPLETED to=IDLE image_id=<id> trigger=<source>
-
+I system_controller: detection_attempt capture=<1..3>/3 rotated=false faces=<n>
+OPTIONAL [STATE] from=DETECTING to=CAPTURING image_id=<same-id> trigger=<source>
+OPTIONAL I image_processing: RGB565 frame rotated 180 degrees width=<width> height=<height>
+OPTIONAL I system_controller: detection_attempt capture=3/3 rotated=true faces=<n>
+FOR EACH FACE IN DESCENDING RAW AREA ORDER:
+I system_controller: face_selected rank=<1..n>/<n> image=<unique-id> box=(...) area=<descending> confidence=<score> expanded=(...)
+[STATE] from=<DETECTING|WAITING_RESULT> to=CROPPING image_id=<unique-id> trigger=<source>
+[STATE] from=CROPPING to=ENCODING image_id=<same-id> trigger=<source>
+[STATE] from=ENCODING to=TRANSMITTING image_id=<same-id> trigger=<source>
+[STATE] from=TRANSMITTING to=WAITING_RESULT image_id=<same-id> trigger=<source>
+I system_controller: recognition_result face=<same-rank>/<n> image=<same-id> status=<0|1|3> person_id=<id-or-empty> name=<name-or-redacted> similarity=<actual> processing_ms=<actual>
+I system_controller: face_batch_complete request=<request-id> faces=<n> ok=<count> unknown=<count> failed=<count>
+[STATE] from=COMPLETED to=IDLE image_id=<last-id> trigger=<source>

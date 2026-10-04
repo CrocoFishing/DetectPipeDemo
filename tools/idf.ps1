@@ -1,6 +1,6 @@
 param(
     [Parameter(Mandatory = $true)]
-    [ValidateSet('phase01_camera','phase02_trigger','phase03_face_pipeline','phase04_protocol','phase05_ble','phase06_end_to_end')]
+    [ValidateSet('phase01_camera','phase02_trigger','phase03_face_pipeline','phase04_protocol','phase05_ble','phase06_end_to_end','event1_audio_face')]
     [string] $App,
     [Parameter(ValueFromRemainingArguments = $true)]
     [string[]] $IdfArgs
@@ -10,10 +10,12 @@ $profilePath = 'C:\Espressif\tools\Microsoft.v6.0.PowerShell_profile.ps1'
 if (-not (Test-Path -LiteralPath $profilePath)) { throw "ESP-IDF 6.0 profile not found: $profilePath" }
 Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force
 . $profilePath
-$env:GIT_CONFIG_COUNT = '1'
+$projectRoot = Split-Path -Parent $PSScriptRoot
+$env:GIT_CONFIG_COUNT = '2'
 $env:GIT_CONFIG_KEY_0 = 'safe.directory'
 $env:GIT_CONFIG_VALUE_0 = 'C:/esp/v6.0/esp-idf'
-$projectRoot = Split-Path -Parent $PSScriptRoot
+$env:GIT_CONFIG_KEY_1 = 'safe.directory'
+$env:GIT_CONFIG_VALUE_1 = $projectRoot.Replace('\', '/')
 $appPath = Join-Path $projectRoot "firmware\apps\$App"
 if (-not (Test-Path -LiteralPath $appPath)) { throw "Unknown firmware app path: $appPath" }
 Push-Location $appPath

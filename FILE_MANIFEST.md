@@ -7,6 +7,7 @@ Generated source and documentation files are grouped below. Generated ESP-IDF `b
 - `.gitignore`
 - `CMakeLists.txt`
 - `README.md`
+- `CHANGELOG.md`
 - `ARCHITECTURE.md`
 - `DEPENDENCIES.md`
 - `DECISIONS.md`
@@ -22,7 +23,7 @@ Generated source and documentation files are grouped below. Generated ESP-IDF `b
 - `firmware/components/pipeline_core/`: request/state/error types and state-machine policies.
 - `firmware/components/trigger_service/`: GPIO2 ISR, debounce, release gate, ID namespaces, BUSY, and duplicate arbitration.
 - `firmware/components/camera_service/`: OV3660/PSRAM initialization and RAII frame ownership.
-- `firmware/components/face_detection/`: fixed ESPDet detector, largest-face selection, margin, and clamp.
+- `firmware/components/face_detection/`: fixed ESPDet detector, stable size sorting, margin, and clamp.
 - `firmware/components/image_processing/`: PSRAM crop/JPEG reusable buffers and quality-85 encoding.
 - `firmware/components/application_protocol/`: binary header, enums, CRC32, encoder, and decoder.
 - `firmware/components/ble_transport/`: NimBLE GATT, dynamic-MTU chunks, notification backpressure, transfer, and RSSI metrics.
@@ -37,7 +38,7 @@ Each component directory contains its `CMakeLists.txt`, public headers under `in
 - `pc_client/requirements.lock`
 - `pc_client/config.example.toml`
 - `pc_client/src/pc_client/{__init__,__main__,protocol,assembler,database,face_engine,recognizer,ble_client}.py`
-- `pc_client/tests/{test_protocol,test_protocol_consistency,test_database,test_jpeg_decode}.py`
+- `pc_client/tests/{test_protocol,test_protocol_consistency,test_face_batch,test_database,test_jpeg_decode}.py`
 
 ## Protocol and clients
 
@@ -53,6 +54,8 @@ Each component directory contains its `CMakeLists.txt`, public headers under `in
 - `tests/phase01/` through `tests/phase06/`: each contains `README.md`, `TEST_PLAN.md`, `RESULT_TEMPLATE.md`, `expected_output.txt`, and `run_test.ps1`; Phase 3 additionally contains `extract_jpeg.py` for device-JPEG restoration and OpenCV decode.
 - `results/phase01/actual/.gitkeep` through `results/phase06/actual/.gitkeep`.
 - `results/LOCAL_VERIFICATION.md`.
+- `results/TEST_DATA_SUMMARY.md`: privacy-reduced inventory, derived metrics, evidence assessment, and test-gap summary for the local test data.
+- Local raw evidence currently adds 26 log, CSV, and result-template files under `results/**/actual/`. These files are intentionally excluded by `.gitignore` and are not part of the GitHub baseline; see `CHANGELOG.md` for the per-phase inventory.
 
 ## Tools
 

@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <limits>
 #include "board_config.hpp"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
@@ -9,6 +10,32 @@
 
 namespace demo {
 namespace { constexpr char TAG[] = "image_processing"; }
+
+esp_err_t rotate_rgb565_180(camera_fb_t& frame) {
+    if (!frame.buf || !frame.width || !frame.height || frame.format != PIXFORMAT_RGB565) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    const size_t width = static_cast<size_t>(frame.width);
+    const size_t height = static_cast<size_t>(frame.height);
+    if (width > std::numeric_limits<size_t>::max() / height) return ESP_ERR_INVALID_SIZE;
+    const size_t pixels = width * height;
+    constexpr size_t BYTES_PER_PIXEL = 2;
+    if (pixels > std::numeric_limits<size_t>::max() / BYTES_PER_PIXEL ||
+        frame.len < pixels * BYTES_PER_PIXEL) {
+        return ESP_ERR_INVALID_SIZE;
+    }
+
+    for (size_t first = 0, last = pixels - 1; first < last; ++first, --last) {
+        uint8_t* first_pixel = frame.buf + first * BYTES_PER_PIXEL;
+        uint8_t* last_pixel = frame.buf + last * BYTES_PER_PIXEL;
+        std::swap(first_pixel[0], last_pixel[0]);
+        std::swap(first_pixel[1], last_pixel[1]);
+    }
+    ESP_LOGI(TAG, "RGB565 frame rotated 180 degrees width=%u height=%u",
+             static_cast<unsigned>(frame.width), static_cast<unsigned>(frame.height));
+    return ESP_OK;
+}
+
 ReusableImageBuffers::~ReusableImageBuffers() { heap_caps_free(crop_); heap_caps_free(jpeg_); }
 esp_err_t ReusableImageBuffers::initialize() {
     if (crop_ && jpeg_) return ESP_OK;

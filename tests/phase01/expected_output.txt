@@ -1,6 +1,5 @@
 I board_support: PSRAM initialized size=<nonzero>
-I camera_service: OV3660 initialized RGB565 QVGA fb_count=2 PSRAM
-I camera_service: frame width=320 height=240 bytes=<nonzero> format=<RGB565>
+I camera_service: OV3660 initialized RGB565 XGA fb_count=2 PSRAM
+I camera_service: frame width=1024 height=768 bytes=1572864 format=<RGB565>
 I phase01: [METRIC] phase=1 image_id=1 metric=frame_bytes value=<nonzero> unit=bytes
 I phase01: [TEST] phase=1 result=PASS_LOCAL_CHECK hardware_claim=false
-

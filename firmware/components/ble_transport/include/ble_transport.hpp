@@ -4,6 +4,8 @@
 #include <cstdint>
 #include "application_protocol.hpp"
 #include "esp_err.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 #include "metrics_service.hpp"
 
 struct ble_gap_event;
@@ -31,8 +33,10 @@ public:
     esp_err_t send_event(protocol::MessageType type, uint32_t request_id, uint32_t image_id,
                          const uint8_t* payload = nullptr, size_t payload_length = 0,
                          uint16_t flags = 0, uint32_t reserved = 0);
-    esp_err_t send_image(uint32_t request_id, uint32_t image_id, const uint8_t* jpeg, size_t length);
+    esp_err_t send_image(uint32_t request_id, uint32_t image_id, const uint8_t* jpeg, size_t length,
+                         uint16_t face_index = 0, uint16_t face_count = 0);
     bool connected() const { return connected_; }
+    void set_event_association_enabled(bool enabled) { event_association_enabled_ = enabled; }
     bool event_subscribed() const { return event_subscribed_; }
     bool image_subscribed() const { return image_subscribed_; }
     uint16_t negotiated_mtu() const { return negotiated_mtu_; }
@@ -52,7 +56,9 @@ private:
     BlePacketHandler control_handler_{nullptr}; BlePacketHandler result_handler_{nullptr}; void* handler_context_{nullptr};
     volatile bool connected_{false}; volatile bool event_subscribed_{false}; volatile bool image_subscribed_{false};
     volatile bool transferring_{false}; uint16_t connection_handle_{0xffff}; uint16_t negotiated_mtu_{23};
-    int64_t last_rssi_us_{0}; BleQualityCounters counters_{}; uint8_t last_event_[128]{}; size_t last_event_length_{0};
+    bool event_association_enabled_{false}; // configured before host startup
+    int64_t last_rssi_us_{0}; BleQualityCounters counters_{}; uint8_t last_event_[517]{}; size_t last_event_length_{0};
+    SemaphoreHandle_t event_mutex_{nullptr};
+    portMUX_TYPE last_event_mux_ = portMUX_INITIALIZER_UNLOCKED;
 };
 }  // namespace demo
-
