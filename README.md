@@ -1,4 +1,4 @@
-# ESP32-S3 Face Detection / PC Recognition Demo
+# ESP32-S3 Face Detection / PC Recognition Demo (old main backup)
 
 This repository is a six-phase ESP-IDF 6.0 demo for Seeed Studio XIAO ESP32-S3 Sense (OV3660). The ESP32-S3 performs **face detection only** with the fixed `espdet_pico_224_224_face_s8_s3` configuration. The PC performs **face recognition** with InsightFace.
 
