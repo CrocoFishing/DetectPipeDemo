@@ -54,7 +54,7 @@ bool TriggerService::duplicate(uint32_t id) {
 SubmitResult TriggerService::submit(const CaptureRequest& r) {
     if (!queue_) return SubmitResult::Busy;
     portENTER_CRITICAL(&mux_);
-    if (busy_) { portEXIT_CRITICAL(&mux_); return SubmitResult::Busy; }
+    if (busy_ || (export_pending_ && !r.has_event)) { portEXIT_CRITICAL(&mux_); return SubmitResult::Busy; }
     if (duplicate(r.request_id)) { portEXIT_CRITICAL(&mux_); return SubmitResult::Duplicate; }
     busy_ = true; portEXIT_CRITICAL(&mux_);
     if (xQueueSend(queue_, &r, 0) != pdTRUE) { complete(); return SubmitResult::Busy; }
@@ -81,4 +81,9 @@ SubmitResult TriggerService::submit_event(uint64_t event_id, uint32_t& request_i
 bool TriggerService::receive(CaptureRequest& r, TickType_t wait) { return xQueueReceive(queue_, &r, wait) == pdTRUE; }
 void TriggerService::complete() { portENTER_CRITICAL(&mux_); busy_ = false; active_image_id_ = 0; active_state_ = SystemState::Idle; portEXIT_CRITICAL(&mux_); }
 void TriggerService::set_active(uint32_t id, SystemState s) { portENTER_CRITICAL(&mux_); active_image_id_ = id; active_state_ = s; portEXIT_CRITICAL(&mux_); }
+void TriggerService::set_export_pending(bool pending) {
+    portENTER_CRITICAL(&mux_);
+    export_pending_ = pending;
+    portEXIT_CRITICAL(&mux_);
+}
 }  // namespace demo

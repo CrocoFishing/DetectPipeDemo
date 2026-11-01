@@ -6,6 +6,10 @@ Build the integrated app with `powershell.exe -ExecutionPolicy Bypass -File .\to
 
 See [Event 1 architecture and operation](docs/EVENT1.md), [current verification](results/EVENT1_VERIFICATION.md), and [hardware acceptance matrix](tests/event1/HARDWARE_TEST_PLAN.md). Compilation and host tests do not establish audio continuity on hardware; that acceptance remains pending.
 
+Event 1 also supports an iOS-initiated SD export: BLE enables a temporary ESP32 Wi-Fi hotspot, the app downloads a verified manifest and every SD file over HTTP, then the device restores recording. Existing Events finish before storage is frozen. Downloads retain relative paths, support byte-range resume, and leave source files on the card. See the [BLE/Wi-Fi contract](docs/BLE_PROTOCOL.md), [iOS integration](docs/IOS_SD_EXPORT.md), [Event data model](docs/EVENT_DATA_MODEL.md), and [export hardware acceptance](tests/event1/SD_EXPORT_HARDWARE_TEST_PLAN.md). The reusable Swift module targets iOS 16 or later; Xcode and iPhone validation remain separate from Windows host checks.
+
+The [SD export verification record](results/SD_EXPORT_VERIFICATION.md) lists the passing host tests, firmware builds and pending hardware checks.
+
 Face detection uses one initial capture plus the bounded recapture count configured by `FACE_DETECTION_MAX_RECAPTURES`. When `FACE_DETECTION_ROTATE_FINAL_FRAME_180` is enabled and all normal attempts miss, the firmware rotates the final RGB565 frame 180 degrees in-place and detects it once more without taking another photo. Both compile-time settings live beside the other detector settings in `board_config.hpp`.
 
 When a frame contains multiple faces, the firmware stably sorts every valid detector box by original area, largest first. It then reuses one crop/JPEG buffer pair to transfer and recognize each face sequentially under the same request; each face has its own image ID and zero-based sequence metadata in the unchanged 32-byte header. Protocol v2 adds Event association messages and requires ATT MTU 67 for those messages.

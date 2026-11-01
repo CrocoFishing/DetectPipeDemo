@@ -12,6 +12,7 @@
 | Image Data | `7f510003-b7b2-4f6a-9f3a-6c8a2d7e1000` | Notify | image chunks |
 | Recognition Result | `7f510004-b7b2-4f6a-9f3a-6c8a2d7e1000` | Write | client result response |
 | Device Information | `7f510005-b7b2-4f6a-9f3a-6c8a2d7e1000` | Read | protocol/firmware/model/build/max-image/features |
+| SD Export Info | `7f510006-b7b2-4f6a-9f3a-6c8a2d7e1000` | Read | optional Wi-Fi export session JSON; GATT long read, at most 512 bytes |
 
 Development mode permits unencrypted read/write. Production permission requirements are encrypted + authenticated writes for Control and Recognition Result, encrypted reads/notifies, bonding, and an application-authorized peer.
 
@@ -52,6 +53,10 @@ Maximum application image is 163,840 bytes. `person_id` is at most 32 UTF-8 byte
 | 16 | EVENT_AUDIO_READY | ESP→Event; audio terminal status and sample range; no audio bytes |
 | 17 | FACE_BATCH_END | ESP→Event; explicit terminal face status and counters |
 | 18 | EVENT_COMPLETE | ESP→Event; final Event/audio/face statuses |
+| 19 | SD_EXPORT_START | client→Control; empty payload |
+| 20 | SD_EXPORT_CANCEL | client→Control; `<session_id:u64>`; requires matching nonzero session |
+| 21 | SD_EXPORT_GET_STATUS | client→Control; `<session_id:u64>`; zero queries latest session |
+| 22 | SD_EXPORT_STATUS | ESP→Event; `<session_id:u64,state:u8,reserved:u8,error_code:u16,reserved:u32>` |
 
 Recognition result fixed prefix is `status:u8, person_id_len:u8, name_len:u8, reserved:u8, similarity:f32, processing_time_ms:u32`, followed by optional UTF-8 ID and name. `person_id`, never the display name, is the stable identity key.
 
@@ -74,7 +79,42 @@ FACE_BATCH_END's status is at byte 22; nine reserved bytes make its payload 32 b
 
 Disconnect/reconnect clears active request/image mappings and the inferred boot session. Images arriving before the new connection receives an Event message remain manual captures; they cannot inherit a previous connection's Event ownership. Durable old Event rows remain available for inspection, and an old recognizer cannot write its result to a newly reused request ID.
 
-The PC maintains a separate `EventStore` SQLite file (`event_store.db` by default), with `events` and `event_faces`. It persists recognition before attempting the BLE response, including UNKNOWN and FAILED. `result_sent` distinguishes results saved locally from successful BLE writes. READY audio supplies the expected SD filename `event_<EVENT_ID>.wav`; Event 1 does not transfer that WAV to the PC. Set the path with `python -m pc_client --event-database events.db run --wait-only`, or pass `event_store=` / `event_database=` to `BleFaceSession`.
+The PC maintains a separate `EventStore` SQLite file (`event_store.db` by default), with `events` and `event_faces`. It persists recognition before attempting the BLE response, including UNKNOWN and FAILED. `result_sent` distinguishes results saved locally from successful BLE writes. READY audio supplies the expected SD filename `event_<EVENT_ID>.wav`; Event messages do not carry that WAV. The optional Wi-Fi SD export below transfers on-card files. Set the database path with `python -m pc_client --event-database events.db run --wait-only`, or pass `event_store=` / `event_database=` to `BleFaceSession`.
+
+## BLE-initiated Wi-Fi SD export
+
+The integrated `event1_audio_face` app advertises feature `WIFI_SD_EXPORT=0x00000040` in Device Information when its export service is installed. Other phase apps do not advertise this feature. Read capabilities before offering export; `HELLO`/`HELLO_ACK` are reserved message types rather than an implemented capability handshake. The SD Export Info characteristic is appended to the existing GATT table, preserving the original UUIDs and ordering.
+
+Subscribe to Event, then send `SD_EXPORT_START` with a fresh nonzero client request ID (bit 31 clear). Export uses a separate nonzero 64-bit session ID, unrelated to Event IDs. All export command/status headers have zero image ID, flags, chunk fields and reserved. START is exactly zero payload bytes; CANCEL and GET_STATUS are exactly eight little-endian bytes. No extra command prefix is included.
+
+`SD_EXPORT_STATUS` is exactly 16 payload bytes (`<QBBHI`): session ID at offset 0, state at 8, zero reserved byte at 9, error code at 10, and four zero reserved bytes at 12. States are IDLE=0, PREPARING=1, READY=2, TRANSFERRING=3, RESTORING=4, COMPLETED=5, CANCELLED=6, FAILED=7. An idle response before any session may carry session ID zero. A status reply echoes the command request ID; asynchronous state updates correlate with the initiating request. GET_STATUS replays current or retained terminal state; an unknown nonzero session fails with INVALID_SESSION. All export notifications fit ATT MTU 67 without fragmentation. Event subscription and MTU 67 are required before START.
+
+PREPARING closes admission to new VAD Events and diagnostic captures. Existing recording/capture work may finish, then pending metadata is drained and SD writers close before the read-only snapshot becomes READY. Preparation is bounded to 30 seconds; timeout restores normal admission without forcibly truncating the active work. Recording/captures remain paused while the snapshot is served. Export recursively includes every regular SD file, including unrelated files, and preserves relative paths; empty directories have no file record. Unsupported paths or any traversal/read failure fail the export rather than silently omitting data. Export never deletes SD data.
+
+The current path limits are 1024 UTF-8 bytes per relative path, 16 directory levels, and 255 UTF-8 bytes per filename (the pinned FatFS filename-output buffer). Unsupported long-name fallback is an export error, not permission to rename files to their short alias. Native FatFS reads and unsigned file sizes support FAT32 files above 2 GiB up to the filesystem's per-file limit; protocol totals and Range arithmetic use unsigned 64-bit values.
+
+After READY, read SD Export Info with CoreBluetooth `readValue(for:)`. Its UTF-8 JSON value is immutable for the session and at most 512 bytes; GATT Read Blob handles values exceeding one ATT packet. Firmware returns the complete cached value to NimBLE on each read, which applies the offset. No BLE packet header wraps this JSON:
+
+```json
+{"format_version":1,"session_id":"0000000100000001","ssid":"EventPipe-example","passphrase":"example-only-passphrase","base_url":"http://192.168.4.1","token":"example-only-replace-with-session-token"}
+```
+
+The session ID uses 16 uppercase hexadecimal digits. Credentials are generated anew for each session and are not persisted as Wi-Fi provisioning. iOS joins the ESP32 WPA2 SoftAP using `NEHotspotConfiguration`, with user consent, and downloads from the supplied local endpoint. Keep credentials in memory and send the token only as `Authorization: Bearer <token>` on every export route. The development BLE security policy above also applies to this credential read. See [iOS integration](IOS_SD_EXPORT.md) for the reusable Swift client, entitlements, privacy keys and example, and [Event data model](EVENT_DATA_MODEL.md) for importing WAV/CSV content.
+
+| HTTP operation | Contract |
+|---|---|
+| `GET /v1/export/status` | Authenticated session status and keep-alive |
+| `GET /v1/export/manifest` | Stream UTF-8 NDJSON header, optional progress, file records, then end record |
+| `GET /v1/export/file?path=<percent-encoded-relative-UTF8-path>` | Raw file bytes; supports a single byte Range and If-Range |
+| `POST /v1/export/complete` | Acknowledge verified snapshot using `session_id`, `manifest_sha256`, `file_count`, `total_bytes` |
+
+The manifest header carries `type:"header"`, `format_version:1` and `session_id`. Each file line contains `type:"file"`, `path`, byte `size`, lowercase hexadecimal `sha256` and a quoted `etag`. Paths are relative to the SD root with `/` separators. The end line contains `type:"end"`, `file_count`, `total_bytes` and `manifest_sha256`. Compute the manifest SHA-256 over **the exact UTF-8 file-record lines including each LF**, excluding header/progress/end; do not parse and reserialize before hashing. A manifest is valid only when its end record is received and count/size/digest agree. Progress records keep long scans observable and are excluded from the digest.
+
+Download each file sequentially into a temporary local file, validate size and SHA-256, then commit it to the app's export directory. Retrying a file within the same session uses Range plus the manifest ETag; a changed ETag requires restarting that file. An offset equal to file size is already complete locally and should be verified without issuing an invalid range. The client posts completion only after all files pass validation. The server sends its completion response before shutting down HTTP/Wi-Fi and restoring audio/capture admission; COMPLETED means restoration succeeded, while restoration failure reports AUDIO_RESUME_FAILED. User cancellation or lease expiry also restores normal operation.
+
+The idle lease is 120 seconds; actual scanning/hash work and transfer progress keep it alive. BLE loss alone does not cancel a valid HTTP session. Reconnect, rediscover and use GET_STATUS to recover state. Export status notifications belong to the BLE connection that issued an export command; a replacement legacy client receives no unsolicited new message types. A restarted device invalidates the old session and credentials. CANCEL must match the active nonzero session. Treat HTTP/SD errors, missing manifest end, wrong session and checksum mismatch as incomplete export; never report success based only on a completed HTTP connection.
+
+New export errors are SD_UNAVAILABLE=23, EXPORT_BUSY=24, QUIESCE_TIMEOUT=25, WIFI_START_FAILED=26, SD_IO=27, INVALID_SESSION=28, AUDIO_RESUME_FAILED=29, PATH_UNSUPPORTED=30 and EXPORT_EXPIRED=31. Existing image/recognition error codes remain unchanged.
 
 ## IDs and ordering
 
@@ -100,19 +140,21 @@ Each capture has a 4 s bounded wait (in pinned esp32-camera 2.1.7) and each dete
 
 ```mermaid
 stateDiagram-v2
+  direction LR
+  state check_multiple <<choice>>
   [*] --> INITIALIZING
   INITIALIZING --> IDLE
   IDLE --> CAPTURING: accepted trigger
   CAPTURING --> DETECTING
-  DETECTING --> CAPTURING: no face; recaptures remain
   DETECTING --> DETECTING: rotate final frame 180 degrees once
   DETECTING --> NO_FACE: all attempts have no valid box
   DETECTING --> CROPPING: sort all faces by area
   CROPPING --> ENCODING
   ENCODING --> TRANSMITTING
   TRANSMITTING --> WAITING_RESULT: IMAGE_END
-  WAITING_RESULT --> CROPPING: matching result; more faces
-  WAITING_RESULT --> COMPLETED: matching result; final face
+  WAITING_RESULT --> check_multiple: check for multiple
+  check_multiple --> CROPPING: matching result : more faces
+  check_multiple --> COMPLETED: matching result : final face
   COMPLETED --> IDLE
   NO_FACE --> IDLE
   CAPTURING --> ERROR_RECOVERY
@@ -148,7 +190,7 @@ sequenceDiagram
 
 On disconnect, the ESP32 stops sending, counts failure/disconnect, releases image ownership in controller recovery, and resumes advertising. The client reconnects, discovers characteristics, and resubscribes; partial images are discarded, never resumed. A fresh request ID is required. Peer-not-subscribed and insufficient-MTU failures are reported without taking another photo.
 
-Error codes 0–22 are defined in YAML and include invalid packet/version/CRC, BUSY/duplicate, camera/PSRAM/capture/model/bbox/crop/JPEG, connection/subscription/congestion/disconnect, image timeout/missing chunk, recognition timeout/stale/wrong image, and internal failure.
+Error codes 0–31 are defined in YAML. Codes 0–22 cover image/recognition transport; codes 23–31 cover the optional SD export described above.
 
 Sample PING request (`request_id=1`, empty payload):
 
@@ -160,3 +202,5 @@ Sample PING request (`request_id=1`, empty payload):
 PC flow uses Bleak scan/connect/discover, subscribes Event and Image, optionally writes START_CAPTURE, reassembles and validates JPEG, runs InsightFace, then writes result. iOS follows the same sequence with `CBCentralManager`, `CBPeripheral`, `.withResponse` Control/Result writes, notify subscriptions, `maximumWriteValueLength`/negotiated notification behavior, and `BLEProtocol.swift` packet validation. No iOS UI is included.
 
 Backward compatibility: v1 peers reject v2 as an unsupported major version; v2 peers reject v1. Upgrade firmware and client together. The 32-byte header offsets, existing message IDs 1–14, UUIDs, image/recognition payloads and FACE_SEQUENCE packing are preserved. v2 clients interpret an unflagged image as face 0 of 1. The host suite checks the normative YAML against Python/C++/Swift constants and compiles the C++ serializers to compare complete golden packets against Python.
+
+The SD export extension keeps protocol version 2 and message IDs 1–18 intact. Older v2 clients reject unknown message IDs, so firmware emits 19–22 traffic only in response to export commands on that BLE connection. The new read characteristic does not require old clients to use it. iOS should rediscover on reconnect and handle `peripheral(_:didModifyServices:)`; include upgrades from a previously connected firmware version in hardware testing because GATT caches can outlive one connection.

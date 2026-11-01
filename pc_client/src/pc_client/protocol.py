@@ -15,6 +15,7 @@ EVENT_UUID = "7f510002-b7b2-4f6a-9f3a-6c8a2d7e1000"
 IMAGE_UUID = "7f510003-b7b2-4f6a-9f3a-6c8a2d7e1000"
 RESULT_UUID = "7f510004-b7b2-4f6a-9f3a-6c8a2d7e1000"
 DEVICE_INFO_UUID = "7f510005-b7b2-4f6a-9f3a-6c8a2d7e1000"
+SD_EXPORT_INFO_UUID = "7f510006-b7b2-4f6a-9f3a-6c8a2d7e1000"
 
 
 class ProtocolError(ValueError):
@@ -44,6 +45,20 @@ class MessageType(enum.IntEnum):
     EVENT_AUDIO_READY = 16
     FACE_BATCH_END = 17
     EVENT_COMPLETE = 18
+    SD_EXPORT_START = 19
+    SD_EXPORT_CANCEL = 20
+    SD_EXPORT_GET_STATUS = 21
+    SD_EXPORT_STATUS = 22
+
+
+class FeatureFlag(enum.IntFlag):
+    EXTERNAL_BUTTON = 0x00000001
+    BLE_TRIGGER = 0x00000002
+    FACE_DETECTION = 0x00000004
+    CROPPED_JPEG = 0x00000008
+    RSSI_METRICS = 0x00000010
+    EVENT_ASSOCIATION = 0x00000020
+    WIFI_SD_EXPORT = 0x00000040
 
 
 class MessageFlag(enum.IntFlag):
@@ -87,10 +102,23 @@ class EventStatus(enum.IntEnum):
     COMPLETE_WITH_ERROR = 1
 
 
+class SdExportState(enum.IntEnum):
+    IDLE = 0
+    PREPARING = 1
+    READY = 2
+    TRANSFERRING = 3
+    RESTORING = 4
+    COMPLETED = 5
+    CANCELLED = 6
+    FAILED = 7
+
+
 EVENT_OPEN_FORMAT = "<QB7x"
 EVENT_AUDIO_READY_FORMAT = "<QB7xQQ"
 FACE_BATCH_END_FORMAT = "<QIHHHHHB9x"
 EVENT_COMPLETE_FORMAT = "<QBBB5x"
+SD_EXPORT_STATUS_FORMAT = "<QBBHI"
+SD_EXPORT_SESSION_FORMAT = "<Q"
 
 
 def event_id_hex(event_id: int) -> str:
@@ -254,6 +282,46 @@ class ErrorCode(enum.IntEnum):
     STALE_RESULT = 20
     INCORRECT_IMAGE_ID = 21
     INTERNAL = 22
+    SD_UNAVAILABLE = 23
+    EXPORT_BUSY = 24
+    QUIESCE_TIMEOUT = 25
+    WIFI_START_FAILED = 26
+    SD_IO = 27
+    INVALID_SESSION = 28
+    AUDIO_RESUME_FAILED = 29
+    PATH_UNSUPPORTED = 30
+    EXPORT_EXPIRED = 31
+
+
+@dataclass(frozen=True, slots=True)
+class SdExportStatus:
+    session_id: int
+    state: SdExportState
+    error: ErrorCode = ErrorCode.NONE
+
+    def encode(self) -> bytes:
+        return struct.pack(SD_EXPORT_STATUS_FORMAT, self.session_id, self.state, 0, self.error, 0)
+
+    @classmethod
+    def decode(cls, payload: bytes) -> SdExportStatus:
+        if len(payload) != struct.calcsize(SD_EXPORT_STATUS_FORMAT):
+            raise ProtocolError("invalid SD export status length")
+        session, state, reserved, error, tail = struct.unpack(SD_EXPORT_STATUS_FORMAT, payload)
+        if reserved or tail:
+            raise ProtocolError("SD export reserved bytes must be zero")
+        try:
+            return cls(session, SdExportState(state), ErrorCode(error))
+        except ValueError as exc:
+            raise ProtocolError("invalid SD export state or error") from exc
+
+    @classmethod
+    def from_packet(cls, packet: Packet) -> SdExportStatus:
+        h = packet.header
+        if h.message_type is not MessageType.SD_EXPORT_STATUS or any(
+            (h.flags, h.image_id, h.chunk_index, h.total_chunks, h.reserved)
+        ):
+            raise ProtocolError("invalid SD export header")
+        return cls.decode(packet.payload)
 
 
 @dataclass(frozen=True, slots=True)
@@ -390,6 +458,32 @@ def start_capture_packet(request_id: int, timestamp_s: int, desired_test_bytes: 
     payload = struct.pack("<HHI", Command.START_CAPTURE, 0, timestamp_s & 0xFFFFFFFF)
     return make_packet(
         MessageType.START_CAPTURE, request_id=request_id, payload=payload, reserved=desired_test_bytes
+    )
+
+
+def _sd_export_packet(message_type: MessageType, request_id: int, payload: bytes) -> bytes:
+    if not 0 < request_id <= 0x7FFFFFFF:
+        raise ValueError("client request_id must be non-zero with bit 31 clear")
+    return make_packet(message_type, request_id=request_id, payload=payload)
+
+
+def sd_export_start_packet(request_id: int) -> bytes:
+    return _sd_export_packet(MessageType.SD_EXPORT_START, request_id, b"")
+
+
+def sd_export_cancel_packet(request_id: int, session_id: int) -> bytes:
+    if not 0 < session_id <= 0xFFFFFFFFFFFFFFFF:
+        raise ValueError("cancel session_id must be a nonzero uint64")
+    return _sd_export_packet(
+        MessageType.SD_EXPORT_CANCEL, request_id, struct.pack(SD_EXPORT_SESSION_FORMAT, session_id)
+    )
+
+
+def sd_export_get_status_packet(request_id: int, session_id: int = 0) -> bytes:
+    if not 0 <= session_id <= 0xFFFFFFFFFFFFFFFF:
+        raise ValueError("status session_id must be a uint64")
+    return _sd_export_packet(
+        MessageType.SD_EXPORT_GET_STATUS, request_id, struct.pack(SD_EXPORT_SESSION_FORMAT, session_id)
     )
 
 

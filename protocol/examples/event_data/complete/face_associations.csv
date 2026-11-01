@@ -1,0 +1,4 @@
+event_id,request_id,image_id,face_index,face_count,status,person_id,similarity,processing_time_ms
+0000002500000068,2147483650,1,0,2,RECOGNIZED,"P,""01",0.710000,52
+0000002500000068,2147483650,2,1,2,UNKNOWN,,0.310000,48
+0000002500000068,2147483650,0,-1,2,COMPLETED,,,0

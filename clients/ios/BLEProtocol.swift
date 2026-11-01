@@ -11,6 +11,8 @@ public enum BLEProtocol {
     public static let imageDataUUID = CBUUID(string: "7f510003-b7b2-4f6a-9f3a-6c8a2d7e1000")
     public static let recognitionResultUUID = CBUUID(string: "7f510004-b7b2-4f6a-9f3a-6c8a2d7e1000")
     public static let deviceInformationUUID = CBUUID(string: "7f510005-b7b2-4f6a-9f3a-6c8a2d7e1000")
+    public static let sdExportInfoUUID = CBUUID(string: "7f510006-b7b2-4f6a-9f3a-6c8a2d7e1000")
+    public static let wifiSDExportFeature: UInt32 = 0x00000040
 }
 
 public enum MessageType: UInt8 {
@@ -18,6 +20,7 @@ public enum MessageType: UInt8 {
     case busy = 5, status = 6, imageBegin = 7, imageChunk = 8, imageEnd = 9
     case recognitionResult = 10, noFace = 11, error = 12, ping = 13, pong = 14
     case eventOpen = 15, eventAudioReady = 16, faceBatchEnd = 17, eventComplete = 18
+    case sdExportStart = 19, sdExportCancel = 20, sdExportGetStatus = 21, sdExportStatus = 22
 }
 
 public struct MessageFlags: OptionSet {
@@ -35,6 +38,10 @@ public enum FaceStatus: UInt8 {
     case busy = 4, timeout = 5, disconnected = 6, failed = 7
 }
 public enum EventStatus: UInt8 { case complete = 0, completeWithError = 1 }
+public enum SDExportState: UInt8 {
+    case idle = 0, preparing = 1, ready = 2, transferring = 3
+    case restoring = 4, completed = 5, cancelled = 6, failed = 7
+}
 public enum ErrorCode: UInt16 {
     case none = 0, invalidPacket = 1, unsupportedVersion = 2, crcMismatch = 3
     case busy = 4, duplicateRequest = 5, cameraInit = 6, psramUnavailable = 7
@@ -43,6 +50,8 @@ public enum ErrorCode: UInt16 {
     case notifyNotSubscribed = 14, bleCongestion = 15, transferDisconnected = 16
     case imageTimeout = 17, chunkMissing = 18, recognitionTimeout = 19
     case staleResult = 20, incorrectImageId = 21, internalError = 22
+    case sdUnavailable = 23, exportBusy = 24, quiesceTimeout = 25, wifiStartFailed = 26
+    case sdIo = 27, invalidSession = 28, audioResumeFailed = 29, pathUnsupported = 30, exportExpired = 31
 }
 
 public enum ProtocolValidationError: Error {
@@ -101,6 +110,52 @@ public struct Packet {
         let payload = data.subdata(in: BLEProtocol.headerLength..<data.count)
         guard CRC32.checksum(payload) == header.crc32 else { throw ProtocolValidationError.crcMismatch }
         return Packet(header: header, payload: payload)
+    }
+}
+
+public struct SDExportStatus {
+    public static let payloadLength = 16
+    public let sessionID: UInt64
+    public let state: SDExportState
+    public let error: ErrorCode
+
+    public static func decode(_ packet: Packet) throws -> SDExportStatus {
+        let h = packet.header, data = packet.payload
+        guard h.messageType == .sdExportStatus, h.imageID == 0, h.flags == 0,
+              h.chunkIndex == 0, h.totalChunks == 0, h.reserved == 0 else {
+            throw ProtocolValidationError.invalidSequence
+        }
+        guard data.count == payloadLength else { throw ProtocolValidationError.invalidLength }
+        guard data[9] == 0, data.uint32LE(at: 12) == 0,
+              let state = SDExportState(rawValue: data[8]),
+              let error = ErrorCode(rawValue: data.uint16LE(at: 10)) else {
+            throw ProtocolValidationError.invalidSequence
+        }
+        return SDExportStatus(sessionID: data.uint64LE(at: 0), state: state, error: error)
+    }
+}
+
+public enum SDExportCommand {
+    public static func start(requestID: UInt32) throws -> Data {
+        try encode(.sdExportStart, requestID: requestID, payload: Data())
+    }
+
+    public static func cancel(requestID: UInt32, sessionID: UInt64) throws -> Data {
+        guard sessionID != 0 else { throw ProtocolValidationError.wrongIdentifiers }
+        var payload = Data(); payload.appendLE(sessionID)
+        return try encode(.sdExportCancel, requestID: requestID, payload: payload)
+    }
+
+    public static func getStatus(requestID: UInt32, sessionID: UInt64 = 0) throws -> Data {
+        var payload = Data(); payload.appendLE(sessionID)
+        return try encode(.sdExportGetStatus, requestID: requestID, payload: payload)
+    }
+
+    private static func encode(_ type: MessageType, requestID: UInt32, payload: Data) throws -> Data {
+        guard requestID != 0, requestID & 0x80000000 == 0 else {
+            throw ProtocolValidationError.wrongIdentifiers
+        }
+        return Packet(header: PacketHeader(messageType: type, requestID: requestID), payload: payload).encoded()
     }
 }
 

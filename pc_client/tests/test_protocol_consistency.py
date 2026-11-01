@@ -21,16 +21,19 @@ def test_yaml_matches_python() -> None:
         "image_data": protocol.IMAGE_UUID,
         "recognition_result": protocol.RESULT_UUID,
         "device_information": protocol.DEVICE_INFO_UUID,
+        "sd_export_info": protocol.SD_EXPORT_INFO_UUID,
     }
     assert spec["uuids"] == actual_uuids
     assert spec["message_types"] == {item.name: item.value for item in protocol.MessageType}
     assert spec["message_flags"] == {item.name: item.value for item in protocol.MessageFlag}
+    assert spec["feature_flags"] == {item.name: item.value for item in protocol.FeatureFlag}
     assert spec["error_codes"] == {item.name: item.value for item in protocol.ErrorCode}
     for section, enum in (
         ("trigger_sources", protocol.TriggerSource),
         ("audio_statuses", protocol.AudioStatus),
         ("face_statuses", protocol.FaceStatus),
         ("event_statuses", protocol.EventStatus),
+        ("sd_export_states", protocol.SdExportState),
     ):
         assert spec[section] == {item.name: item.value for item in enum}
     for name, format_ in (
@@ -38,6 +41,10 @@ def test_yaml_matches_python() -> None:
         ("EVENT_AUDIO_READY", protocol.EVENT_AUDIO_READY_FORMAT),
         ("FACE_BATCH_END", protocol.FACE_BATCH_END_FORMAT),
         ("EVENT_COMPLETE", protocol.EVENT_COMPLETE_FORMAT),
+        ("SD_EXPORT_START", ""),
+        ("SD_EXPORT_CANCEL", protocol.SD_EXPORT_SESSION_FORMAT),
+        ("SD_EXPORT_GET_STATUS", protocol.SD_EXPORT_SESSION_FORMAT),
+        ("SD_EXPORT_STATUS", protocol.SD_EXPORT_STATUS_FORMAT),
     ):
         payload = spec["payloads"][name]
         assert payload["python_struct"] == format_
@@ -74,6 +81,10 @@ def test_cpp_and_swift_contain_protocol_constants() -> None:
         "EVENT_AUDIO_READY": "EventAudioReady",
         "FACE_BATCH_END": "FaceBatchEnd",
         "EVENT_COMPLETE": "EventComplete",
+        "SD_EXPORT_START": "SdExportStart",
+        "SD_EXPORT_CANCEL": "SdExportCancel",
+        "SD_EXPORT_GET_STATUS": "SdExportGetStatus",
+        "SD_EXPORT_STATUS": "SdExportStatus",
     }
     swift_names = {name: value[0].lower() + value[1:] for name, value in cpp_names.items()}
     for name in cpp_names:
@@ -83,3 +94,24 @@ def test_cpp_and_swift_contain_protocol_constants() -> None:
         constant = re.sub(r"(?<!^)(?=[A-Z])", "_", name).upper() + "_PAYLOAD_SIZE"
         payload_name = re.sub(r"(?<!^)(?=[A-Z])", "_", name).upper()
         assert f"{constant} = {spec['payloads'][payload_name]['length']}" in app_header
+
+
+def test_sd_export_enums_and_mtu_limits_match_all_clients() -> None:
+    spec = yaml.safe_load((ROOT / "protocol/ble_protocol.yaml").read_text(encoding="utf-8"))
+    cpp = (ROOT / "firmware/components/application_protocol/include/application_protocol.hpp").read_text()
+    swift = (ROOT / "clients/ios/BLEProtocol.swift").read_text()
+    for section in ("sd_export_states", "error_codes"):
+        names = spec[section]
+        if section == "error_codes":
+            names = {name: value for name, value in names.items() if value >= 23}
+        for name, value in names.items():
+            cpp_name = "".join(word.capitalize() for word in name.split("_"))
+            swift_name = cpp_name[0].lower() + cpp_name[1:]
+            assert re.search(rf"\b{cpp_name}\s*=\s*{value}\b", cpp)
+            assert re.search(rf"\b{swift_name}\s*=\s*{value}\b", swift)
+    assert "WifiSdExport = 1U << 6" in cpp
+    assert "wifiSDExportFeature: UInt32 = 0x00000040" in swift
+    assert "SD_EXPORT_STATUS_PAYLOAD_SIZE = 16" in cpp
+    assert "SD_EXPORT_SESSION_PAYLOAD_SIZE = 8" in cpp
+    assert spec["protocol"]["header_length"] + struct.calcsize(protocol.SD_EXPORT_STATUS_FORMAT) + 3 <= 67
+    assert spec["characteristics"]["sd_export_info"]["maximum_bytes"] == 512

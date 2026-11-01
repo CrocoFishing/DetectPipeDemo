@@ -1,0 +1,52 @@
+[
+  {
+    "event_id": "0000002500000069",
+    "lifecycle": [
+      {
+        "event_id": "0000002500000069",
+        "state": "OPEN",
+        "timestamp_us": "2000000",
+        "status": "OK"
+      },
+      {
+        "event_id": "0000002500000069",
+        "state": "FACE_BATCH_END",
+        "timestamp_us": "2000100",
+        "status": "BUSY"
+      },
+      {
+        "event_id": "0000002500000069",
+        "state": "AUDIO_READY",
+        "timestamp_us": "2000200",
+        "status": "READY"
+      },
+      {
+        "event_id": "0000002500000069",
+        "state": "COMPLETE",
+        "timestamp_us": "2000201",
+        "status": "COMPLETE_WITH_ERROR"
+      }
+    ],
+    "audio": {
+      "event_id": "0000002500000069",
+      "audio_file": "event_0000002500000069.wav",
+      "audio_source": "RAW",
+      "sample_rate": "16000",
+      "channels": "1",
+      "bits_per_sample": "16",
+      "audio_first_sample": "2000",
+      "vad_start_sample": "2002",
+      "vad_end_sample": "2004",
+      "audio_last_sample": "2008",
+      "vad_start_timestamp_us": "2000000",
+      "vad_end_timestamp_us": "2000125",
+      "audio_status": "READY",
+      "has_preroll": "True"
+    },
+    "faces": [],
+    "batch_terminal_status": "BUSY",
+    "face_status": "BUSY",
+    "expected_face_count": 0,
+    "status": "COMPLETE_WITH_ERROR"
+  }
+]

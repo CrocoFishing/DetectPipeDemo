@@ -47,6 +47,23 @@ bool SystemController::event_client_ready() const {
     }
     return true;
 }
+void SystemController::set_sd_export_handlers(ExportCommandHandler handler, void* context,
+                                             size_t (*info_provider)(uint8_t*, size_t, void*)) {
+    portENTER_CRITICAL(&export_mux_);
+    export_handler_ = handler;
+    export_context_ = context;
+    portEXIT_CRITICAL(&export_mux_);
+    ble_.set_sd_export_info_provider(info_provider, context);
+}
+esp_err_t SystemController::send_sd_export_status(uint32_t request, const uint8_t* payload, size_t length) {
+    portENTER_CRITICAL(&export_mux_);
+    const uint32_t owner = export_connection_generation_;
+    portEXIT_CRITICAL(&export_mux_);
+    // A replacement legacy client never receives an export notification just
+    // because a previous BLE connection left a Wi-Fi session running.
+    if (!owner || owner != ble_.connection_generation()) return ESP_ERR_INVALID_STATE;
+    return ble_.send_event(protocol::MessageType::SdExportStatus, request, 0, payload, length, 0, 0, owner);
+}
 esp_err_t SystemController::initialize() {
     board::init_status_led(); ESP_RETURN_ON_ERROR(board::validate_hardware_resources(), TAG, "hardware validation failed");
     rx_queue_ = xQueueCreate(8, sizeof(RxPacket)); result_queue_ = xQueueCreate(2, sizeof(RxPacket));
@@ -97,6 +114,7 @@ void SystemController::enqueue_rx(const uint8_t* d, size_t n) {
     if (!d || n > sizeof(RxPacket::data)) return;
     RxPacket p{};
     p.length = static_cast<uint16_t>(n);
+    p.connection_generation = ble_.connection_generation();
     std::memcpy(p.data, d, n);
     if (xQueueSend(rx_queue_, &p, 0) != pdTRUE) metrics_.emit(0, "queue_congestion_count", 1, "count");
 }
@@ -361,6 +379,29 @@ void SystemController::ble_event_task() {
         if (status != protocol::DecodeStatus::Ok) { ESP_LOGW(TAG, "invalid BLE packet status=%d", static_cast<int>(status)); continue; }
         if (h.message_type == protocol::MessageType::RecognitionResult) { if (xQueueSend(result_queue_, &p, 0) != pdTRUE) metrics_.emit(h.image_id, "queue_congestion_count", 1, "count"); continue; }
         if (h.message_type == protocol::MessageType::Ping) { ble_.send_event(protocol::MessageType::Pong, h.request_id, h.image_id); continue; }
+        if (h.message_type == protocol::MessageType::SdExportStart ||
+            h.message_type == protocol::MessageType::SdExportCancel ||
+            h.message_type == protocol::MessageType::SdExportGetStatus) {
+            if (p.connection_generation != ble_.connection_generation()) continue;
+            if (!ble_.event_subscribed() || ble_.negotiated_mtu() < 67) {
+                const uint16_t error = static_cast<uint16_t>(protocol::ErrorCode::InvalidPacket);
+                const uint8_t bytes[]{static_cast<uint8_t>(error), static_cast<uint8_t>(error >> 8)};
+                ble_.send_event(protocol::MessageType::Error, h.request_id, 0, bytes, sizeof(bytes));
+                continue;
+            }
+            portENTER_CRITICAL(&export_mux_);
+            const auto handler = export_handler_;
+            void* context = export_context_;
+            export_connection_generation_ = p.connection_generation;
+            portEXIT_CRITICAL(&export_mux_);
+            if (!handler || !handler(h, payload, context)) {
+                const uint16_t error = static_cast<uint16_t>(handler ? protocol::ErrorCode::ExportBusy
+                                                                 : protocol::ErrorCode::InvalidPacket);
+                const uint8_t bytes[]{static_cast<uint8_t>(error), static_cast<uint8_t>(error >> 8)};
+                ble_.send_event(protocol::MessageType::Error, h.request_id, 0, bytes, sizeof(bytes));
+            }
+            continue;
+        }
         if (h.message_type != protocol::MessageType::StartCapture || h.payload_length < 8 || read16(payload) != static_cast<uint16_t>(protocol::Command::StartCapture)) continue;
         SubmitResult result = triggers_.submit_ble(h.request_id);
         if (result == SubmitResult::Accepted) ble_.send_event(protocol::MessageType::CaptureAccepted, h.request_id, 0);

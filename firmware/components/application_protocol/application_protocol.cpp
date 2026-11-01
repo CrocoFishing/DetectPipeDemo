@@ -28,7 +28,7 @@ uint32_t crc32(const uint8_t* data, size_t length) {
     return crc ^ 0xFFFFFFFFU;
 }
 
-bool is_known_type(uint8_t value) { return value >= 1 && value <= 18; }
+bool is_known_type(uint8_t value) { return value >= 1 && value <= 22; }
 
 size_t encode_payload(const EventOpenPayload& v, uint8_t* p, size_t cap) {
     if (!prepare(p, cap, EVENT_OPEN_PAYLOAD_SIZE)) return 0;
@@ -53,6 +53,21 @@ size_t encode_payload(const EventCompletePayload& v, uint8_t* p, size_t cap) {
     put64(p, v.event_id); p[8] = static_cast<uint8_t>(v.event_status);
     p[9] = static_cast<uint8_t>(v.audio_status); p[10] = static_cast<uint8_t>(v.face_status);
     return EVENT_COMPLETE_PAYLOAD_SIZE;
+}
+size_t encode_payload(const SdExportStatusPayload& v, uint8_t* p, size_t cap) {
+    if (!prepare(p, cap, SD_EXPORT_STATUS_PAYLOAD_SIZE)) return 0;
+    put64(p, v.session_id); p[8] = static_cast<uint8_t>(v.state);
+    put16(p + 10, static_cast<uint16_t>(v.error));
+    return SD_EXPORT_STATUS_PAYLOAD_SIZE;
+}
+bool decode_payload(const uint8_t* p, size_t len, SdExportStatusPayload& v) {
+    if (!p || len != SD_EXPORT_STATUS_PAYLOAD_SIZE ||
+        p[8] > static_cast<uint8_t>(SdExportState::Failed) || p[9] ||
+        get16(p + 10) > static_cast<uint16_t>(ErrorCode::ExportExpired) ||
+        !reserved_zero(p + 12, 4)) return false;
+    v.session_id = get64(p); v.state = static_cast<SdExportState>(p[8]);
+    v.error = static_cast<ErrorCode>(get16(p + 10));
+    return true;
 }
 bool decode_payload(const uint8_t* p, size_t len, EventOpenPayload& v) {
     if (!p || len != EVENT_OPEN_PAYLOAD_SIZE || p[8] != 3 || !reserved_zero(p + 9, 7)) return false;
@@ -115,7 +130,7 @@ DecodeStatus decode_packet(const uint8_t* data, size_t len, PacketHeader& h, con
 }
 
 const char* message_type_name(MessageType t) {
-    static constexpr const char* names[] = {"INVALID", "HELLO", "HELLO_ACK", "START_CAPTURE", "CAPTURE_ACCEPTED", "BUSY", "STATUS", "IMAGE_BEGIN", "IMAGE_CHUNK", "IMAGE_END", "RECOGNITION_RESULT", "NO_FACE", "ERROR", "PING", "PONG", "EVENT_OPEN", "EVENT_AUDIO_READY", "FACE_BATCH_END", "EVENT_COMPLETE"};
+    static constexpr const char* names[] = {"INVALID", "HELLO", "HELLO_ACK", "START_CAPTURE", "CAPTURE_ACCEPTED", "BUSY", "STATUS", "IMAGE_BEGIN", "IMAGE_CHUNK", "IMAGE_END", "RECOGNITION_RESULT", "NO_FACE", "ERROR", "PING", "PONG", "EVENT_OPEN", "EVENT_AUDIO_READY", "FACE_BATCH_END", "EVENT_COMPLETE", "SD_EXPORT_START", "SD_EXPORT_CANCEL", "SD_EXPORT_GET_STATUS", "SD_EXPORT_STATUS"};
     const auto i = static_cast<unsigned>(t); return i < sizeof(names) / sizeof(names[0]) ? names[i] : "UNKNOWN";
 }
 }  // namespace protocol
