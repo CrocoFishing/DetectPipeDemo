@@ -177,6 +177,7 @@ int main(void) {
      * attempts cannot consume END's reserved slot. Test every queue occupancy,
      * rather than relying on timing or a particular number of PCM frames.
      */
+<<<<<<< HEAD
     const size_t depths[] = {32, 64, 256};
     for (size_t depth_index = 0; depth_index < sizeof(depths) / sizeof(depths[0]); ++depth_index) {
         const size_t depth = depths[depth_index];
@@ -192,6 +193,19 @@ int main(void) {
             --slots;
             assert(slots <= depth);
         }
+=======
+    for (size_t occupied = 0; occupied <= 32; ++occupied) {
+        size_t slots = 32 - occupied;
+        if (!recorder_queue_admits(PACKET_BEGIN, slots)) continue;
+        --slots;
+        for (unsigned i = 0; i < 100; ++i) {
+            packet_type_t kind = i % 2 ? PACKET_AUDIO : PACKET_METADATA;
+            if (recorder_queue_admits(kind, slots)) --slots;
+        }
+        assert(recorder_queue_admits(PACKET_END, slots));
+        --slots;
+        assert(slots <= 32);
+>>>>>>> fad0770f9a6e5c0128515521f1e160a23e27bf04
     }
     puts("PASS: actual WAV header/PCM, short-write, open/flush/close failures, power-loss repair, malformed input; raw pre-roll wrap/zero/fallback/discontinuity/bounded copy; END admission during writer stalls");
     return 0;

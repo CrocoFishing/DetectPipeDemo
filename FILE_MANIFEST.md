@@ -26,8 +26,11 @@ Generated source and documentation files are grouped below. Generated ESP-IDF `b
 - `tests/event1/export_coordination_test.cpp`: production export coordinator host scenarios.
 - `tests/event1/SD_EXPORT_HARDWARE_TEST_PLAN.md`: iPhone/SD/radio/resource acceptance matrix.
 - `tools/test_sd_export_core.ps1`: portable export path/range/manifest/receipt checks.
+<<<<<<< HEAD
 - `tools/smoke_sd_export_ble.py`: exact-device hardware START/READY/CANCEL/resume checks without logging credentials or changing the client Wi-Fi network.
 - `tests/event1/recorder_queue_test.c`: actual recorder producer/FIFO checks for SD stalls, packet ownership and reserved END capacity.
+=======
+>>>>>>> fad0770f9a6e5c0128515521f1e160a23e27bf04
 
 ## Firmware baseline
 

@@ -8,6 +8,7 @@ CONFIG_FATFS_API_ENCODING_UTF_8=y
 CONFIG_ESP_WIFI_TASK_PINNED_TO_CORE_1=y
 CONFIG_ESP_COEX_SW_COEXIST_ENABLE=y
 CONFIG_HTTPD_MAX_URI_LEN=3400
+<<<<<<< HEAD
 # Keep NimBLE host pools in PSRAM so camera/audio task stacks and I2S DMA
 # retain contiguous internal RAM. Controller memory and task stacks stay internal.
 CONFIG_BT_NIMBLE_MEM_ALLOC_MODE_INTERNAL=n
@@ -27,3 +28,5 @@ CONFIG_ESP_WIFI_MGMT_SBUF_NUM=6
 # Keep the RGB565 DMA staging path while reserving DMA-capable RAM for SD sector
 # bounce buffers after networking initialization. The driver supports 8-32 KiB.
 CONFIG_CAMERA_DMA_BUFFER_SIZE_MAX=16384
+=======
+>>>>>>> fad0770f9a6e5c0128515521f1e160a23e27bf04

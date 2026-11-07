@@ -2,14 +2,21 @@
 
 Status: **pending hardware and Xcode validation**. Host tests and successful firmware compilation do not establish radio coexistence, permission behavior, audio recovery, or throughput.
 
+<<<<<<< HEAD
 Limited board results from 2026-11-02 are recorded in [the flash/monitor verification](../../results/SD_EXPORT_HARDWARE_20261102.md): startup, two control/resume cycles, manual NO_FACE captures and a post-export READY WAV. The full matrix below remains the acceptance target.
 
+=======
+>>>>>>> fad0770f9a6e5c0128515521f1e160a23e27bf04
 Use the integrated `event1_audio_face` image and an iPhone running iOS 16 or later. Record board/camera/SD model, card format/capacity, firmware revision, iOS/Xcode versions, negotiated MTU, distance, power source and free/largest internal/DMA/PSRAM heaps. Preserve evidence locally under `results/sd_export/actual/` with credentials redacted.
 
 ## Setup
 
 1. Confirm the existing camera/audio Event acceptance setup and WAV/CSV reconstruction first.
+<<<<<<< HEAD
 2. Verify effective sdkconfig matches the integrated app defaults, including UTF-8 FatFS, Wi-Fi core 1/software coexistence, NimBLE external host allocation, disabled Wi-Fi IRAM acceleration, bounded radio buffers and 16 KiB camera staging DMA. Existing saved sdkconfig choices can override new defaults.
+=======
+2. Verify effective sdkconfig selects `CONFIG_FATFS_API_ENCODING_UTF_8=y`, Wi-Fi core 1 and `CONFIG_ESP_COEX_SW_COEXIST_ENABLE=y`; existing saved sdkconfig choices can override new defaults.
+>>>>>>> fad0770f9a6e5c0128515521f1e160a23e27bf04
 3. Build/flash with `tools/idf.ps1 -App event1_audio_face`. Add the iOS Swift package to a signed iOS host and configure the permissions/entitlement described in `docs/IOS_SD_EXPORT.md`.
 4. Prepare a card containing multiple complete Events, an incomplete Event, zero-byte/extra/hidden files, nested directories, spaces, `+`, `%`, `&` and Chinese names. Keep an independent path/size/SHA-256 inventory for comparison.
 

@@ -11,7 +11,10 @@ $common = Join-Path $repository 'firmware\components\audio_common\include'
 $ring = Join-Path $repository 'firmware\components\ring_buffer\include'
 $wav = Join-Path $repository 'firmware\components\recorder\include'
 $recorderSource = Join-Path $testPath 'recorder_init_test.c'
+<<<<<<< HEAD
 $recorderQueueSource = Join-Path $testPath 'recorder_queue_test.c'
+=======
+>>>>>>> fad0770f9a6e5c0128515521f1e160a23e27bf04
 $recorderStubs = Join-Path $testPath 'recorder_host_stubs'
 $recorderPrivate = Join-Path $repository 'firmware\components\recorder\private_include'
 $afeSource = Join-Path $testPath 'afe_init_test.c'
@@ -29,7 +32,10 @@ $vad = Join-Path $repository 'firmware\components\vad\include'
 # Only compiler invocation uses cmd; filesystem operations stay in PowerShell.
 $compile = 'call "' + $compilerSetup + '" >nul && cl /nologo /std:c11 /W4 /WX /D_CRT_SECURE_NO_WARNINGS /I"' + $stubs + '" /I"' + $common + '" /I"' + $ring + '" /I"' + $wav + '" "' + $source + '" /Fe:audio_artifact_test.exe'
 $compileRecorder = 'call "' + $compilerSetup + '" >nul && cl /nologo /std:c11 /W4 /WX /D_CRT_SECURE_NO_WARNINGS /I"' + $recorderStubs + '" /I"' + $common + '" /I"' + $wav + '" /I"' + $recorderPrivate + '" "' + $recorderSource + '" /Fe:recorder_init_test.exe'
+<<<<<<< HEAD
 $compileRecorderQueue = 'call "' + $compilerSetup + '" >nul && cl /nologo /std:c11 /W4 /WX /D_CRT_SECURE_NO_WARNINGS /I"' + $recorderStubs + '" /I"' + $common + '" /I"' + $wav + '" /I"' + $recorderPrivate + '" "' + $recorderQueueSource + '" /Fe:recorder_queue_test.exe'
+=======
+>>>>>>> fad0770f9a6e5c0128515521f1e160a23e27bf04
 $compileAfe = 'call "' + $compilerSetup + '" >nul && cl /nologo /std:c11 /W4 /WX /D_CRT_SECURE_NO_WARNINGS /I"' + $afeStubs + '" /I"' + $common + '" /I"' + $dsp + '" /I"' + $dspPrivate + '" "' + $afeSource + '" /Fe:afe_init_test.exe'
 $compilePipeline = 'call "' + $compilerSetup + '" >nul && cl /nologo /std:c11 /W4 /WX /D_CRT_SECURE_NO_WARNINGS /I"' + $pipelineStubs + '" /I"' + $common + '" /I"' + $pipeline + '" /I"' + $capture + '" /I"' + $dsp + '" /I"' + $audioMetrics + '" /I"' + $ring + '" /I"' + $wav + '" /I"' + $vad + '" "' + $pipelineSource + '" /Fe:pipeline_init_test.exe'
 $compileCapture = 'call "' + $compilerSetup + '" >nul && cl /nologo /std:c11 /W4 /WX /D_CRT_SECURE_NO_WARNINGS /I"' + $captureStubs + '" /I"' + $common + '" /I"' + $capture + '" "' + $captureSource + '" /Fe:capture_lifecycle_test.exe'
@@ -47,10 +53,13 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "Recorder lifecycle test compilation failed: $LASTEXITCODE" }
     & '.\recorder_init_test.exe'
     if ($LASTEXITCODE -ne 0) { throw "Recorder lifecycle tests failed: $LASTEXITCODE" }
+<<<<<<< HEAD
     & cmd.exe /d /s /c $compileRecorderQueue
     if ($LASTEXITCODE -ne 0) { throw "Recorder queue test compilation failed: $LASTEXITCODE" }
     & '.\recorder_queue_test.exe'
     if ($LASTEXITCODE -ne 0) { throw "Recorder queue tests failed: $LASTEXITCODE" }
+=======
+>>>>>>> fad0770f9a6e5c0128515521f1e160a23e27bf04
     & cmd.exe /d /s /c $compileAfe
     if ($LASTEXITCODE -ne 0) { throw "AFE lifecycle test compilation failed: $LASTEXITCODE" }
     & '.\afe_init_test.exe'

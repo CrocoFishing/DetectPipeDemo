@@ -2,8 +2,11 @@
 
 Implementation is complete for host/build review. **Xcode, iPhone and ESP32/SD hardware acceptance are pending.** Build success does not establish Wi-Fi/BLE coexistence, available runtime heap, transfer throughput or recording recovery on a physical board.
 
+<<<<<<< HEAD
 **2026-11-02 update:** [Flash/monitor runtime fixes and limited board verification](SD_EXPORT_HARDWARE_20261102.md) cover startup, BLE/SoftAP control/resume, manual NO_FACE captures and post-export READY recordings. A later six-hour observation exposed residual SD queue loss; the queue was increased to 256 slots and re-flashed, with two more control/resume cycles and a post-export READY WAV passing. Production FIFO regressions cover 980 ms and 4,980 ms writer stalls; the current Python regression has 81 passing tests. Full iPhone/file-transfer/endurance acceptance remains pending; the table below preserves the original 2026-11-01 results.
 
+=======
+>>>>>>> fad0770f9a6e5c0128515521f1e160a23e27bf04
 ## Passed checks
 
 | Check | Result |

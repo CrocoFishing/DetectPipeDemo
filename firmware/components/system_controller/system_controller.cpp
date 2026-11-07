@@ -80,7 +80,10 @@ esp_err_t SystemController::initialize() {
 }
 esp_err_t SystemController::start() {
     if (started_ || !rx_queue_ || !result_queue_) return ESP_ERR_INVALID_STATE;
+<<<<<<< HEAD
     board::log_memory("before_controller_tasks");
+=======
+>>>>>>> fad0770f9a6e5c0128515521f1e160a23e27bf04
     TaskHandle_t ble_task = nullptr, metrics_task = nullptr;
     if (xTaskCreate(ble_event_task_entry, "ble_event_task", 4096, this, 6, &ble_task) != pdPASS) {
         ESP_LOGE(TAG, "BLE event task allocation failed"); return ESP_ERR_NO_MEM;
@@ -91,12 +94,18 @@ esp_err_t SystemController::start() {
     }
     if (xTaskCreatePinnedToCore(pipeline_task_entry, "camera_pipeline_task", 8192, this, 7, nullptr, 1) != pdPASS) {
         vTaskDelete(ble_task); vTaskDelete(metrics_task);
+<<<<<<< HEAD
         ESP_LOGE(TAG, "camera task allocation failed: stack_bytes=8192");
         board::log_memory("camera_task_failed");
         return ESP_ERR_NO_MEM;
     }
     started_ = true;
     board::log_memory("controller_started");
+=======
+        ESP_LOGE(TAG, "camera task allocation failed"); return ESP_ERR_NO_MEM;
+    }
+    started_ = true;
+>>>>>>> fad0770f9a6e5c0128515521f1e160a23e27bf04
     return ESP_OK;
 }
 void SystemController::rx_control(const uint8_t* d, size_t n, void* c) { static_cast<SystemController*>(c)->enqueue_rx(d, n); }

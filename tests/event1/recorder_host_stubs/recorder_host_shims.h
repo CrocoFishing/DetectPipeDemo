@@ -57,12 +57,15 @@ QueueHandle_t xQueueCreate(UBaseType_t depth, UBaseType_t item_bytes);
 QueueHandle_t xQueueCreateStatic(UBaseType_t depth, UBaseType_t item_bytes,
                                 uint8_t *storage, StaticQueue_t *control);
 void vQueueDelete(QueueHandle_t queue);
+<<<<<<< HEAD
 #ifdef RECORDER_QUEUE_TEST
 UBaseType_t uxQueueSpacesAvailable(QueueHandle_t queue);
 UBaseType_t uxQueueMessagesWaiting(QueueHandle_t queue);
 BaseType_t xQueueSend(QueueHandle_t queue, const void *item, TickType_t wait);
 BaseType_t xQueueReceive(QueueHandle_t queue, void *item, TickType_t wait);
 #else
+=======
+>>>>>>> fad0770f9a6e5c0128515521f1e160a23e27bf04
 static inline UBaseType_t uxQueueSpacesAvailable(QueueHandle_t queue) {
     return queue->depth;
 }
@@ -78,7 +81,10 @@ static inline BaseType_t xQueueReceive(QueueHandle_t queue, void *item, TickType
     (void)queue; (void)item; (void)wait;
     return 0;
 }
+<<<<<<< HEAD
 #endif
+=======
+>>>>>>> fad0770f9a6e5c0128515521f1e160a23e27bf04
 static inline BaseType_t xTaskCreatePinnedToCore(void (*entry)(void *), const char *name,
         uint32_t stack, void *argument, UBaseType_t priority, TaskHandle_t *task, int core) {
     (void)entry; (void)name; (void)stack; (void)argument; (void)priority; (void)task; (void)core;

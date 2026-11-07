@@ -21,9 +21,13 @@
 #include "recorder_queue_policy.h"
 
 #define MOUNT_POINT "/sd"
+<<<<<<< HEAD
 // Capture delivers 320 samples every 20 ms. 256 slots absorb about 5 s of SD
 // stalls while keeping the existing two reserved control slots in PSRAM.
 #define RECORDER_QUEUE_DEPTH 256
+=======
+#define RECORDER_QUEUE_DEPTH 32
+>>>>>>> fad0770f9a6e5c0128515521f1e160a23e27bf04
 #define RECORDER_PACKET_SAMPLES 512
 #define METADATA_ROW_BYTES 512
 typedef struct {
@@ -339,11 +343,15 @@ esp_err_t sd_recorder_start(void)
     ESP_RETURN_ON_ERROR(mount_card(), TAG, "SD unavailable; audio capture remains available");
     s_recorder.running = true;
     if (xTaskCreatePinnedToCore(recorder_task, "sd_writer", 6144, NULL, 8, &s_recorder.task, 1) != pdPASS) {
+<<<<<<< HEAD
         s_recorder.running = false;
         ESP_LOGE(TAG, "SD writer task allocation failed: stack_bytes=6144 internal_free=%u internal_largest=%u",
                  (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
                  (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
         return ESP_ERR_NO_MEM;
+=======
+        s_recorder.running = false; return ESP_ERR_NO_MEM;
+>>>>>>> fad0770f9a6e5c0128515521f1e160a23e27bf04
     }
     return ESP_OK;
 }
