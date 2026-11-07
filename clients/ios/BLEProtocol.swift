@@ -2,7 +2,7 @@ import Foundation
 import CoreBluetooth
 
 public enum BLEProtocol {
-    public static let version: UInt8 = 1
+    public static let version: UInt8 = 2
     public static let magic: UInt32 = 0x45434146
     public static let headerLength = 32
     public static let serviceUUID = CBUUID(string: "7f510000-b7b2-4f6a-9f3a-6c8a2d7e1000")
@@ -11,12 +11,16 @@ public enum BLEProtocol {
     public static let imageDataUUID = CBUUID(string: "7f510003-b7b2-4f6a-9f3a-6c8a2d7e1000")
     public static let recognitionResultUUID = CBUUID(string: "7f510004-b7b2-4f6a-9f3a-6c8a2d7e1000")
     public static let deviceInformationUUID = CBUUID(string: "7f510005-b7b2-4f6a-9f3a-6c8a2d7e1000")
+    public static let sdExportInfoUUID = CBUUID(string: "7f510006-b7b2-4f6a-9f3a-6c8a2d7e1000")
+    public static let wifiSDExportFeature: UInt32 = 0x00000040
 }
 
 public enum MessageType: UInt8 {
     case hello = 1, helloAck = 2, startCapture = 3, captureAccepted = 4
     case busy = 5, status = 6, imageBegin = 7, imageChunk = 8, imageEnd = 9
     case recognitionResult = 10, noFace = 11, error = 12, ping = 13, pong = 14
+    case eventOpen = 15, eventAudioReady = 16, faceBatchEnd = 17, eventComplete = 18
+    case sdExportStart = 19, sdExportCancel = 20, sdExportGetStatus = 21, sdExportStatus = 22
 }
 
 public struct MessageFlags: OptionSet {
@@ -27,6 +31,17 @@ public struct MessageFlags: OptionSet {
 
 public enum Command: UInt16 { case startCapture = 1 }
 public enum StatusCode: UInt8 { case ok = 0, unknown = 1, noFace = 2, failed = 3 }
+public enum TriggerSource: UInt8 { case event1 = 3 }
+public enum AudioStatus: UInt8 { case pending = 0, ready = 1, failed = 2 }
+public enum FaceStatus: UInt8 {
+    case pending = 0, completed = 1, noFace = 2, partial = 3
+    case busy = 4, timeout = 5, disconnected = 6, failed = 7
+}
+public enum EventStatus: UInt8 { case complete = 0, completeWithError = 1 }
+public enum SDExportState: UInt8 {
+    case idle = 0, preparing = 1, ready = 2, transferring = 3
+    case restoring = 4, completed = 5, cancelled = 6, failed = 7
+}
 public enum ErrorCode: UInt16 {
     case none = 0, invalidPacket = 1, unsupportedVersion = 2, crcMismatch = 3
     case busy = 4, duplicateRequest = 5, cameraInit = 6, psramUnavailable = 7
@@ -35,6 +50,8 @@ public enum ErrorCode: UInt16 {
     case notifyNotSubscribed = 14, bleCongestion = 15, transferDisconnected = 16
     case imageTimeout = 17, chunkMissing = 18, recognitionTimeout = 19
     case staleResult = 20, incorrectImageId = 21, internalError = 22
+    case sdUnavailable = 23, exportBusy = 24, quiesceTimeout = 25, wifiStartFailed = 26
+    case sdIo = 27, invalidSession = 28, audioResumeFailed = 29, pathUnsupported = 30, exportExpired = 31
 }
 
 public enum ProtocolValidationError: Error {
@@ -96,6 +113,52 @@ public struct Packet {
     }
 }
 
+public struct SDExportStatus {
+    public static let payloadLength = 16
+    public let sessionID: UInt64
+    public let state: SDExportState
+    public let error: ErrorCode
+
+    public static func decode(_ packet: Packet) throws -> SDExportStatus {
+        let h = packet.header, data = packet.payload
+        guard h.messageType == .sdExportStatus, h.imageID == 0, h.flags == 0,
+              h.chunkIndex == 0, h.totalChunks == 0, h.reserved == 0 else {
+            throw ProtocolValidationError.invalidSequence
+        }
+        guard data.count == payloadLength else { throw ProtocolValidationError.invalidLength }
+        guard data[9] == 0, data.uint32LE(at: 12) == 0,
+              let state = SDExportState(rawValue: data[8]),
+              let error = ErrorCode(rawValue: data.uint16LE(at: 10)) else {
+            throw ProtocolValidationError.invalidSequence
+        }
+        return SDExportStatus(sessionID: data.uint64LE(at: 0), state: state, error: error)
+    }
+}
+
+public enum SDExportCommand {
+    public static func start(requestID: UInt32) throws -> Data {
+        try encode(.sdExportStart, requestID: requestID, payload: Data())
+    }
+
+    public static func cancel(requestID: UInt32, sessionID: UInt64) throws -> Data {
+        guard sessionID != 0 else { throw ProtocolValidationError.wrongIdentifiers }
+        var payload = Data(); payload.appendLE(sessionID)
+        return try encode(.sdExportCancel, requestID: requestID, payload: payload)
+    }
+
+    public static func getStatus(requestID: UInt32, sessionID: UInt64 = 0) throws -> Data {
+        var payload = Data(); payload.appendLE(sessionID)
+        return try encode(.sdExportGetStatus, requestID: requestID, payload: payload)
+    }
+
+    private static func encode(_ type: MessageType, requestID: UInt32, payload: Data) throws -> Data {
+        guard requestID != 0, requestID & 0x80000000 == 0 else {
+            throw ProtocolValidationError.wrongIdentifiers
+        }
+        return Packet(header: PacketHeader(messageType: type, requestID: requestID), payload: payload).encoded()
+    }
+}
+
 public struct RecognitionResult {
     public let requestID: UInt32
     public let imageID: UInt32
@@ -111,6 +174,85 @@ public struct RecognitionResult {
         payload.appendLE(similarity.bitPattern); payload.appendLE(processingTimeMs); payload.append(id); payload.append(name)
         return Packet(header: PacketHeader(messageType: .recognitionResult, requestID: requestID, imageID: imageID),
                       payload: payload).encoded()
+    }
+}
+
+// Event messages preserve the existing header and FACE_SEQUENCE metadata.
+// Parsing uses fixed offsets, never native struct memory layouts.
+public enum EventPayload {
+    public static let eventOpenLength = 16
+    public static let eventAudioReadyLength = 32
+    public static let faceBatchEndLength = 32
+    public static let eventCompleteLength = 16
+
+    case open(eventID: UInt64, trigger: TriggerSource)
+    case audioReady(eventID: UInt64, status: AudioStatus, firstSample: UInt64, lastSample: UInt64)
+    case faceBatchEnd(eventID: UInt64, requestID: UInt32, expected: UInt16, completed: UInt16,
+                      recognized: UInt16, unknown: UInt16, failed: UInt16, status: FaceStatus)
+    case complete(eventID: UInt64, status: EventStatus, audio: AudioStatus, face: FaceStatus)
+
+    public static func eventIDHex(_ value: UInt64) -> String { String(format: "%016llX", value) }
+
+    public static func decode(_ packet: Packet) throws -> EventPayload {
+        let data = packet.payload
+        guard packet.header.imageID == 0, packet.header.flags == 0, packet.header.reserved == 0,
+              packet.header.chunkIndex == 0, packet.header.totalChunks == 0 else {
+            throw ProtocolValidationError.invalidSequence
+        }
+        func validate(_ length: Int, _ reserved: Range<Int>) throws {
+            guard data.count == length else { throw ProtocolValidationError.invalidLength }
+            guard data.uint64LE(at: 0) != 0, data[reserved].allSatisfy({ $0 == 0 }) else {
+                throw ProtocolValidationError.invalidSequence
+            }
+        }
+        switch packet.header.messageType {
+        case .eventOpen:
+            try validate(eventOpenLength, 9..<16)
+            guard let trigger = TriggerSource(rawValue: data[8]) else {
+                throw ProtocolValidationError.invalidSequence
+            }
+            return .open(eventID: data.uint64LE(at: 0), trigger: trigger)
+        case .eventAudioReady:
+            try validate(eventAudioReadyLength, 9..<16)
+            guard let status = AudioStatus(rawValue: data[8]), status != .pending,
+                  data.uint64LE(at: 24) >= data.uint64LE(at: 16) else {
+                throw ProtocolValidationError.invalidSequence
+            }
+            return .audioReady(eventID: data.uint64LE(at: 0), status: status,
+                               firstSample: data.uint64LE(at: 16), lastSample: data.uint64LE(at: 24))
+        case .faceBatchEnd:
+            try validate(faceBatchEndLength, 23..<32)
+            let request = data.uint32LE(at: 8), expected = data.uint16LE(at: 12)
+            let completed = data.uint16LE(at: 14), recognized = data.uint16LE(at: 16)
+            let unknown = data.uint16LE(at: 18), failed = data.uint16LE(at: 20)
+            guard request == packet.header.requestID, completed <= expected,
+                  UInt32(recognized) + UInt32(unknown) + UInt32(failed) == UInt32(completed),
+                  let status = FaceStatus(rawValue: data[22]), status != .pending else {
+                throw ProtocolValidationError.invalidSequence
+            }
+            if status == .completed && (completed != expected || failed != 0) {
+                throw ProtocolValidationError.invalidSequence
+            }
+            if (status == .noFace || status == .busy) && (expected != 0 || completed != 0) {
+                throw ProtocolValidationError.invalidSequence
+            }
+            return .faceBatchEnd(eventID: data.uint64LE(at: 0), requestID: request, expected: expected,
+                                 completed: completed, recognized: recognized, unknown: unknown,
+                                 failed: failed, status: status)
+        case .eventComplete:
+            try validate(eventCompleteLength, 11..<16)
+            guard let status = EventStatus(rawValue: data[8]),
+                  let audio = AudioStatus(rawValue: data[9]), audio != .pending,
+                  let face = FaceStatus(rawValue: data[10]), face != .pending else {
+                throw ProtocolValidationError.invalidSequence
+            }
+            let expected: EventStatus = (audio == .ready && (face == .completed || face == .noFace))
+                ? .complete : .completeWithError
+            guard status == expected else { throw ProtocolValidationError.invalidSequence }
+            return .complete(eventID: data.uint64LE(at: 0), status: status, audio: audio, face: face)
+        default:
+            throw ProtocolValidationError.unknownMessage(packet.header.messageType.rawValue)
+        }
     }
 }
 
@@ -202,5 +344,8 @@ private extension Data {
     func uint16LE(at offset: Int) -> UInt16 { UInt16(self[offset]) | UInt16(self[offset + 1]) << 8 }
     func uint32LE(at offset: Int) -> UInt32 {
         UInt32(self[offset]) | UInt32(self[offset + 1]) << 8 | UInt32(self[offset + 2]) << 16 | UInt32(self[offset + 3]) << 24
+    }
+    func uint64LE(at offset: Int) -> UInt64 {
+        UInt64(uint32LE(at: offset)) | UInt64(uint32LE(at: offset + 4)) << 32
     }
 }

@@ -1,0 +1,44 @@
+menu "Audio validation board"
+
+choice BOARD_SD_PROFILE
+    prompt "XIAO ESP32-S3 Sense microSD pin profile"
+    default BOARD_SD_PROFILE_CURRENT
+    help
+        Confirm the expansion-board revision before recording. Current Seeed
+        documentation lists CS=GPIO3; older documentation/code listed GPIO21.
+
+    config BOARD_SD_PROFILE_CURRENT
+        bool "Current Sense expansion board (CS GPIO3)"
+
+    config BOARD_SD_PROFILE_LEGACY
+        bool "Legacy/documentation variant (CS GPIO21)"
+
+    config BOARD_SD_PROFILE_CUSTOM
+        bool "Custom pin mapping"
+endchoice
+
+config BOARD_SD_CUSTOM_CS_GPIO
+    int "Custom SD CS GPIO"
+    range 0 48
+    default 3
+    depends on BOARD_SD_PROFILE_CUSTOM
+
+config BOARD_SD_CUSTOM_SCLK_GPIO
+    int "Custom SD SCLK GPIO"
+    range 0 48
+    default 7
+    depends on BOARD_SD_PROFILE_CUSTOM
+
+config BOARD_SD_CUSTOM_MISO_GPIO
+    int "Custom SD MISO GPIO"
+    range 0 48
+    default 8
+    depends on BOARD_SD_PROFILE_CUSTOM
+
+config BOARD_SD_CUSTOM_MOSI_GPIO
+    int "Custom SD MOSI GPIO"
+    range 0 48
+    default 9
+    depends on BOARD_SD_PROFILE_CUSTOM
+
+endmenu

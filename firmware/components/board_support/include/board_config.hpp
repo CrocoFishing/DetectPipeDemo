@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 #include "driver/gpio.h"
+#include "sdkconfig.h"
 
 namespace board {
 
@@ -32,6 +33,31 @@ inline constexpr uint32_t EXTERNAL_TRIGGER_RELEASE_POLL_MS = 10;
 inline constexpr gpio_num_t BOOT_GPIO = GPIO_NUM_0;  // Reserved; never configured by the app.
 inline constexpr gpio_num_t STATUS_LED_GPIO = GPIO_NUM_21;
 inline constexpr int STATUS_LED_ACTIVE_LEVEL = 0;
+
+inline constexpr gpio_num_t PDM_DATA_GPIO = GPIO_NUM_41;
+inline constexpr gpio_num_t PDM_CLK_GPIO = GPIO_NUM_42;
+#if CONFIG_BOARD_SD_PROFILE_LEGACY
+inline constexpr gpio_num_t SD_CS_GPIO = GPIO_NUM_21;
+inline constexpr char SD_PROFILE[] = "legacy-gpio21";
+#elif CONFIG_BOARD_SD_PROFILE_CUSTOM
+inline constexpr gpio_num_t SD_CS_GPIO = static_cast<gpio_num_t>(CONFIG_BOARD_SD_CUSTOM_CS_GPIO);
+inline constexpr char SD_PROFILE[] = "custom";
+#else
+inline constexpr gpio_num_t SD_CS_GPIO = GPIO_NUM_3;
+inline constexpr char SD_PROFILE[] = "current-gpio3";
+#endif
+#if CONFIG_BOARD_SD_PROFILE_CUSTOM
+inline constexpr gpio_num_t SD_SCLK_GPIO = static_cast<gpio_num_t>(CONFIG_BOARD_SD_CUSTOM_SCLK_GPIO);
+inline constexpr gpio_num_t SD_MISO_GPIO = static_cast<gpio_num_t>(CONFIG_BOARD_SD_CUSTOM_MISO_GPIO);
+inline constexpr gpio_num_t SD_MOSI_GPIO = static_cast<gpio_num_t>(CONFIG_BOARD_SD_CUSTOM_MOSI_GPIO);
+#else
+inline constexpr gpio_num_t SD_SCLK_GPIO = GPIO_NUM_7;
+inline constexpr gpio_num_t SD_MISO_GPIO = GPIO_NUM_8;
+inline constexpr gpio_num_t SD_MOSI_GPIO = GPIO_NUM_9;
+#endif
+inline constexpr bool STATUS_LED_AVAILABLE = SD_CS_GPIO != STATUS_LED_GPIO &&
+    SD_SCLK_GPIO != STATUS_LED_GPIO && SD_MISO_GPIO != STATUS_LED_GPIO &&
+    SD_MOSI_GPIO != STATUS_LED_GPIO;
 
 inline constexpr uint32_t CAMERA_XCLK_HZ = 20'000'000;
 inline constexpr uint16_t CAMERA_FRAME_WIDTH = 1024;

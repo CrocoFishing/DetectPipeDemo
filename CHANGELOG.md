@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+### 2026-11-02 - Flash/monitor runtime fixes
+
+- Fixed integrated-app startup allocation failures by moving NimBLE host pools to PSRAM and disabling Wi-Fi IRAM acceleration in the app profile.
+- Bounded the single-client Wi-Fi buffer configuration and reduced camera staging DMA from 32 KiB to 16 KiB so SD DMA allocations remain available after export/resume.
+- Initially increased the PSRAM-backed SD writer queue from 32 to 64 packets after a measured card stall dropped 19 capture packets, retaining the existing END/control reservation policy.
+- Increased the queue again to 256 slots (288,768 PSRAM bytes, about five seconds of 320-sample packets) after about 6.4 hours of observation with 64 slots still showed 121 cumulative queue overruns and 38,720 dropped samples (2.42 seconds).
+- Production recorder/FIFO host regressions now pass for 980 ms and 4,980 ms writer stalls, including PCM copies/order, saturation counters and END admission. Long-duration hardware acceptance of the 256-slot queue remains pending.
+- Added startup heap diagnostics and a credential-safe BLE export smoke tool. Board startup, two export/cancel/resume cycles and two manual NO_FACE capture requests were exercised on COM8; full iOS/file-download acceptance remains separate.
+
+### BLE-started Wi-Fi SD export
+
+- Added the optional Event 1 SD export feature: BLE commands create one temporary WPA2 SoftAP session, stream a SHA-256 manifest and every SD file over HTTP, and preserve source files and relative paths.
+- Added HTTP Range/If-Range resume, explicit verified completion, bounded inactivity/cancellation, and BLE status recovery across reconnects.
+- Added Event/manual admission gates, EventManager quiescence acknowledgement, SD writer barrier, and audio suspend/resume that preserves storage and Event identity while releasing AFE/I2S resources during export.
+- Extended protocol v2 with message IDs 19–22, feature bit `0x40`, and the Export Info long-read characteristic; existing capture/Event wire formats remain unchanged.
+- Added reusable iOS Swift modules, foreground integration/permissions instructions, and the SD Event data contract with examples. Xcode/iPhone and hardware acceptance remain pending.
+
 ### Face pipeline and camera
 
 - Changed camera capture from the earlier VGA/QVGA path to 1024×768 XGA RGB565 and increased face expansion to 20% per side (40% total).

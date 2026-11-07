@@ -30,6 +30,10 @@ void log_memory(const char* phase) {
 }
 
 void init_status_led() {
+    if (!STATUS_LED_AVAILABLE) {
+        ESP_LOGW(TAG, "status LED disabled: selected SD pin profile owns GPIO21");
+        return;
+    }
     gpio_config_t cfg{};
     cfg.pin_bit_mask = 1ULL << static_cast<unsigned>(STATUS_LED_GPIO);
     cfg.mode = GPIO_MODE_OUTPUT;
@@ -38,6 +42,7 @@ void init_status_led() {
 }
 
 void set_status_led(bool on) {
+    if (!STATUS_LED_AVAILABLE) return;
     gpio_set_level(STATUS_LED_GPIO, on ? STATUS_LED_ACTIVE_LEVEL : !STATUS_LED_ACTIVE_LEVEL);
 }
 }  // namespace board

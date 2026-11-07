@@ -1,0 +1,29 @@
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="../../event1.partitions.csv"
+CONFIG_FATFS_LFN_HEAP=y
+CONFIG_FATFS_MAX_LFN=255
+CONFIG_SR_VADN_VADNET1_MEDIUM=y
+CONFIG_BOARD_SD_PROFILE_LEGACY=y
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
+CONFIG_FATFS_API_ENCODING_UTF_8=y
+CONFIG_ESP_WIFI_TASK_PINNED_TO_CORE_1=y
+CONFIG_ESP_COEX_SW_COEXIST_ENABLE=y
+CONFIG_HTTPD_MAX_URI_LEN=3400
+# Keep NimBLE host pools in PSRAM so camera/audio task stacks and I2S DMA
+# retain contiguous internal RAM. Controller memory and task stacks stay internal.
+CONFIG_BT_NIMBLE_MEM_ALLOC_MODE_INTERNAL=n
+CONFIG_BT_NIMBLE_MEM_ALLOC_MODE_EXTERNAL=y
+# Prefer enough shared internal RAM for camera/audio stacks and DMA over Wi-Fi
+# IRAM acceleration. Wi-Fi functionality is retained with a throughput tradeoff.
+CONFIG_ESP_WIFI_IRAM_OPT=n
+CONFIG_ESP_WIFI_RX_IRAM_OPT=n
+# A single export client uses bounded radio buffers; keep the RX BA window no
+# larger than static RX capacity and retain the default five RX management buffers.
+CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=4
+CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=8
+CONFIG_ESP_WIFI_DYNAMIC_TX_BUFFER_NUM=8
+CONFIG_ESP_WIFI_RX_BA_WIN=4
+CONFIG_ESP_WIFI_TX_BA_WIN=4
+CONFIG_ESP_WIFI_MGMT_SBUF_NUM=6
+# Keep the RGB565 DMA staging path while reserving DMA-capable RAM for SD sector
+# bounce buffers after networking initialization. The driver supports 8-32 KiB.
+CONFIG_CAMERA_DMA_BUFFER_SIZE_MAX=16384

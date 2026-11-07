@@ -1,0 +1,2 @@
+event_id,audio_file,audio_source,sample_rate,channels,bits_per_sample,audio_first_sample,vad_start_sample,vad_end_sample,audio_last_sample,vad_start_timestamp_us,vad_end_timestamp_us,audio_status
+0000002500000068,event_0000002500000068.wav,RAW,16000,1,16,1000,1002,1004,1008,1000000,1000125,READY

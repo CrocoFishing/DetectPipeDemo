@@ -14,8 +14,11 @@ public:
     esp_err_t initialize(TriggerSubmitObserver observer = nullptr, void* observer_context = nullptr);
     bool receive(CaptureRequest& request, TickType_t wait);
     SubmitResult submit_ble(uint32_t request_id);
+    SubmitResult submit_event(uint64_t event_id, uint32_t& request_id);
     void complete();
     void set_active(uint32_t image_id, SystemState state);
+    // Blocks manual requests while already admitted Event owners finish.
+    void set_export_pending(bool pending);
     bool busy() const { return busy_; }
     uint32_t active_image_id() const { return active_image_id_; }
     SystemState active_state() const { return active_state_; }
@@ -25,10 +28,12 @@ private:
     void trigger_task();
     SubmitResult submit(const CaptureRequest& request);
     bool duplicate(uint32_t id);
+    uint32_t next_generated_id();
     QueueHandle_t queue_{nullptr};
     TaskHandle_t task_{nullptr};
     portMUX_TYPE mux_ = portMUX_INITIALIZER_UNLOCKED;
     volatile bool busy_{false};
+    bool export_pending_{false};
     volatile uint32_t active_image_id_{0};
     volatile SystemState active_state_{SystemState::Idle};
     uint32_t generated_counter_{1};

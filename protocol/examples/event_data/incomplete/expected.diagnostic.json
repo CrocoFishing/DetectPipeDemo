@@ -1,0 +1,26 @@
+[
+  {
+    "event_id": "000000250000006A",
+    "lifecycle": [
+      {
+        "event_id": "000000250000006A",
+        "state": "OPEN",
+        "timestamp_us": "3000000",
+        "status": "OK"
+      },
+      {
+        "event_id": "000000250000006A",
+        "state": "FACE_BATCH_END",
+        "timestamp_us": "3000100",
+        "status": "DISCONNECTED"
+      }
+    ],
+    "audio": null,
+    "faces": [],
+    "request_id": 2147483651,
+    "batch_terminal_status": "DISCONNECTED",
+    "face_status": "DISCONNECTED",
+    "expected_face_count": 3,
+    "status": "INCOMPLETE"
+  }
+]

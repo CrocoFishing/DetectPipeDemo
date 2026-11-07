@@ -1,0 +1,2 @@
+event_id,request_id,image_id,face_index,face_count,status,person_id,similarity,processing_time_ms
+0000002500000069,0,0,-1,0,BUSY,,,0

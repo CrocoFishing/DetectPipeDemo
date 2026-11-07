@@ -1,0 +1,76 @@
+[
+  {
+    "event_id": "0000002500000068",
+    "lifecycle": [
+      {
+        "event_id": "0000002500000068",
+        "state": "OPEN",
+        "timestamp_us": "1000000",
+        "status": "OK"
+      },
+      {
+        "event_id": "0000002500000068",
+        "state": "FACE_BATCH_END",
+        "timestamp_us": "1000100",
+        "status": "COMPLETED"
+      },
+      {
+        "event_id": "0000002500000068",
+        "state": "AUDIO_READY",
+        "timestamp_us": "1000200",
+        "status": "READY"
+      },
+      {
+        "event_id": "0000002500000068",
+        "state": "COMPLETE",
+        "timestamp_us": "1000201",
+        "status": "COMPLETE"
+      }
+    ],
+    "audio": {
+      "event_id": "0000002500000068",
+      "audio_file": "event_0000002500000068.wav",
+      "audio_source": "RAW",
+      "sample_rate": "16000",
+      "channels": "1",
+      "bits_per_sample": "16",
+      "audio_first_sample": "1000",
+      "vad_start_sample": "1002",
+      "vad_end_sample": "1004",
+      "audio_last_sample": "1008",
+      "vad_start_timestamp_us": "1000000",
+      "vad_end_timestamp_us": "1000125",
+      "audio_status": "READY",
+      "has_preroll": "True"
+    },
+    "faces": [
+      {
+        "event_id": "0000002500000068",
+        "request_id": "2147483650",
+        "image_id": "1",
+        "face_index": "0",
+        "face_count": "2",
+        "status": "RECOGNIZED",
+        "person_id": "P,\"01",
+        "similarity": "0.710000",
+        "processing_time_ms": "52"
+      },
+      {
+        "event_id": "0000002500000068",
+        "request_id": "2147483650",
+        "image_id": "2",
+        "face_index": "1",
+        "face_count": "2",
+        "status": "UNKNOWN",
+        "person_id": "",
+        "similarity": "0.310000",
+        "processing_time_ms": "48"
+      }
+    ],
+    "request_id": 2147483650,
+    "batch_terminal_status": "COMPLETED",
+    "face_status": "COMPLETED",
+    "expected_face_count": 2,
+    "status": "COMPLETE"
+  }
+]

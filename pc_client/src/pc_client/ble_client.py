@@ -10,16 +10,19 @@ from pathlib import Path
 from typing import Any
 
 from .assembler import ImageAssembler
+from .event_store import EventStore
 from .protocol import (
     CONTROL_UUID,
     EVENT_UUID,
     IMAGE_UUID,
     RESULT_UUID,
+    EventOpen,
     MessageType,
     Packet,
     ProtocolError,
     StatusCode,
     decode_packet,
+    event_id_hex,
     recognition_result_packet,
     start_capture_packet,
 )
@@ -64,6 +67,7 @@ class ReceivedFaceImage:
     face_index: int
     face_count: int
     jpeg: bytes
+    event_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -173,7 +177,14 @@ async def scan_devices(timeout: float = 10.0) -> list[dict[str, object]]:
 
 
 class BleFaceSession:
-    def __init__(self, device_name: str, on_image: Callable[[ReceivedFaceImage], Any] | None = None) -> None:
+    def __init__(
+        self,
+        device_name: str,
+        on_image: Callable[[ReceivedFaceImage], Any] | None = None,
+        *,
+        event_store: EventStore | None = None,
+        event_database: str | Path = "event_store.db",
+    ) -> None:
         self.device_name = device_name
         self.on_image = on_image
         self.assembler = ImageAssembler()
@@ -188,10 +199,25 @@ class BleFaceSession:
         self.disconnect_count = 0
         self.reconnect_count = 0
         self.batch_tracker = FaceBatchTracker()
+        self.event_store = event_store if event_store is not None else EventStore(event_database)
+        self._owns_event_store = event_store is None
+        self._event_requests: dict[int, str] = {}
+        self._owned_images: dict[tuple[int, int], str] = {}
+        self._open_events: set[str] = set()
+        self._boot_session: str | None = None
+
+    def close(self) -> None:
+        if self._owns_event_store:
+            self.event_store.close()
+            self._owns_event_store = False
 
     async def connect(self, timeout: float = 10.0) -> None:
         from bleak import BleakClient
 
+        # Counters can restart while disconnected. Until this connection receives
+        # an Event message, no prior boot's durable request mapping is usable.
+        self.event_store.mark_disconnected(self._open_events)
+        self._clear_active_ownership()
         device, self.initial_rssi = await find_device(self.device_name, timeout)
         self.client = BleakClient(device, disconnected_callback=self._disconnected)
         try:
@@ -208,12 +234,29 @@ class BleFaceSession:
 
     def _disconnected(self, _: Any) -> None:
         self.disconnect_count += 1
+        self.event_store.mark_disconnected(self._open_events)
+        self._clear_active_ownership()
+
+    def _clear_active_ownership(self) -> None:
+        self._event_requests.clear()
+        self._owned_images.clear()
+        self._open_events.clear()
+        self._boot_session = None
         self.batch_tracker.clear()
+        self.assembler = ImageAssembler()
 
     def _notification(self, _: Any, data: bytearray) -> None:
         try:
             packet = decode_packet(bytes(data))
-            if packet.header.message_type is MessageType.IMAGE_BEGIN:
+            if self.event_store.handle_packet(packet):
+                self._associate_event(packet)
+                self._log_event(packet)
+            elif packet.header.message_type is MessageType.IMAGE_BEGIN:
+                event_id = self._event_for_request(packet.header.request_id)
+                if event_id is not None:
+                    row = self.event_store.event(event_id)
+                    if row["opened_at"] is None or row["face_terminal_received"] or row["completed_at"]:
+                        raise ProtocolError("image began before OPEN or after face terminal")
                 self.assembler.begin(packet)
                 self.started = time.perf_counter()
                 self.chunk_count = 0
@@ -229,7 +272,17 @@ class BleFaceSession:
                     face_index=self.assembler.face_index,
                     face_count=self.assembler.face_count,
                     jpeg=jpeg,
+                    event_id=self._event_for_request(packet.header.request_id),
                 )
+                if image.event_id is not None:
+                    self.event_store.accept_face(
+                        event_id=image.event_id,
+                        request_id=image.request_id,
+                        image_id=image.image_id,
+                        face_index=image.face_index,
+                        face_count=image.face_count,
+                    )
+                    self._owned_images[(image.request_id, image.image_id)] = image.event_id
                 if self.on_image:
                     self.batch_tracker.accept(image)
                 self.last_image = jpeg
@@ -246,6 +299,55 @@ class BleFaceSession:
         except ProtocolError as exc:
             self.crc_failures += int("CRC" in str(exc))
             LOG.error("invalid notification: %s", exc)
+
+    def _associate_event(self, packet: Packet) -> None:
+        event_id = event_id_hex(int.from_bytes(packet.payload[:8], "little"))
+        boot_session = event_id[:8]
+        if self._boot_session is None or boot_session > self._boot_session:
+            if self._boot_session is not None:
+                self.event_store.mark_disconnected(self._open_events)
+                self.batch_tracker.clear()
+                self.assembler = ImageAssembler()
+            self._boot_session = boot_session
+            self._event_requests.clear()
+            self._owned_images.clear()
+            self._open_events.clear()
+        if boot_session == self._boot_session:
+            row = self.event_store.event(event_id)
+            if row["completed_at"] is None:
+                self._open_events.add(event_id)
+                if packet.header.request_id:
+                    self._event_requests[packet.header.request_id] = event_id
+            else:
+                self._open_events.discard(event_id)
+                if row["request_id"]:
+                    self._event_requests.pop(row["request_id"], None)
+                    self._owned_images = {
+                        key: owner for key, owner in self._owned_images.items() if owner != event_id
+                    }
+        if packet.header.message_type is MessageType.EVENT_OPEN:
+            value = EventOpen.decode(packet.payload)
+            LOG.info(
+                "EVENT %s request_id=%d trigger=%s",
+                event_id,
+                packet.header.request_id,
+                value.trigger_type.name,
+            )
+        elif packet.header.message_type is MessageType.EVENT_COMPLETE:
+            row = self.event_store.event(event_id)
+            LOG.info(
+                "EVENT %s COMPLETE audio=%d face=%d faces=%d",
+                event_id,
+                row["audio_status"],
+                row["face_status"],
+                row["face_count"] or 0,
+            )
+
+    def _event_for_request(self, request_id: int) -> str | None:
+        owner = self._event_requests.get(request_id)
+        if owner is None and self._boot_session is not None:
+            owner = self.event_store.event_for_request(request_id, self._boot_session)
+        return owner
 
     @staticmethod
     def _log_event(packet: Packet) -> None:
@@ -276,7 +378,25 @@ class BleFaceSession:
         person_name: str,
         similarity: float,
         processing_time_ms: int,
+        *,
+        event_id: str | None = None,
     ) -> None:
+        owner = event_id or self._owned_images.get((request_id, image_id))
+        if owner is not None:
+            self.event_store.record_recognition(
+                event_id=owner,
+                request_id=request_id,
+                image_id=image_id,
+                status=status,
+                person_id=person_id,
+                person_name=person_name,
+                similarity=similarity,
+                processing_time_ms=processing_time_ms,
+            )
+        if not self.client or not self.client.is_connected:
+            raise BleAdapterUnavailable("BLE disconnected; recognition retained locally")
+        if owner is not None and self._event_for_request(request_id) != owner:
+            raise ProtocolError("stale result belongs to a previous boot session")
         packet = recognition_result_packet(
             request_id=request_id,
             image_id=image_id,
@@ -287,6 +407,9 @@ class BleFaceSession:
             processing_time_ms=processing_time_ms,
         )
         await self.client.write_gatt_char(RESULT_UUID, packet, response=True)
+        if owner is not None:
+            self.event_store.mark_result_sent(owner, request_id, image_id)
+            self._owned_images.pop((request_id, image_id), None)
 
     def complete_face(self, image: ReceivedFaceImage, status: StatusCode) -> RecognitionBatchSummary | None:
         return self.batch_tracker.complete(image, status)

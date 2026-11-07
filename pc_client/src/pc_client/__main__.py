@@ -20,6 +20,7 @@ if TYPE_CHECKING:
 def parser() -> argparse.ArgumentParser:
     root = argparse.ArgumentParser(prog="python -m pc_client")
     root.add_argument("--database", default="face_demo.db")
+    root.add_argument("--event-database", default="event_store.db")
     root.add_argument("--model", default="buffalo_l")
     root.add_argument("--threshold", type=float, default=0.45)
     root.add_argument("--verbose", action="store_true")
@@ -74,15 +75,20 @@ async def run_client(args: argparse.Namespace) -> None:
             person_name = str(exc)[:64]
             similarity = 0.0
         processing_time_ms = int((time.perf_counter() - started) * 1000)
-        await session.send_recognition_result(
-            image.request_id,
-            image.image_id,
-            status,
-            person_id,
-            person_name,
-            similarity,
-            processing_time_ms,
-        )
+        try:
+            await session.send_recognition_result(
+                image.request_id,
+                image.image_id,
+                status,
+                person_id,
+                person_name,
+                similarity,
+                processing_time_ms,
+                event_id=image.event_id,
+            )
+        except Exception:
+            logging.exception("result delivery failed; EventStore retains recognition")
+            return
         logging.info(
             "face_result request_id=%d image_id=%d face=%d/%d status=%s person_id=%s "
             "name=%s similarity=%.4f processing_ms=%d",
@@ -107,23 +113,24 @@ async def run_client(args: argparse.Namespace) -> None:
                 summary.failed_count,
             )
 
-    session = BleFaceSession(args.device_name, on_image)
-    await session.connect()
-    if not args.wait_only:
-        await session.start_capture(1)
+    session = BleFaceSession(args.device_name, on_image, event_database=args.event_database)
     try:
+        await session.connect()
+        if not args.wait_only:
+            await session.start_capture(1)
         while True:
             await asyncio.sleep(1)
     finally:
         database.close()
         await session.disconnect()
+        session.close()
 
 
 async def ble_test(args: argparse.Namespace) -> None:
     sizes = [int(value) * 1000 for value in args.sizes_kb.split(",")]
-    session = BleFaceSession(args.device_name)
-    await session.connect()
+    session = BleFaceSession(args.device_name, event_database=args.event_database)
     try:
+        await session.connect()
         request_id = 100
         for size in sizes:
             for _ in range(args.repeat):
@@ -134,6 +141,7 @@ async def ble_test(args: argparse.Namespace) -> None:
                 await asyncio.sleep(1)
     finally:
         await session.disconnect()
+        session.close()
 
 
 def main() -> None:

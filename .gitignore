@@ -1,5 +1,7 @@
 build/
 managed_components/
+# Offline validation copies of pinned managed components (never source baselines).
+firmware/apps/*/components/
 sdkconfig
 sdkconfig.old
 *.pyc
@@ -8,6 +10,8 @@ __pycache__/
 .mypy_cache/
 .ruff_cache/
 .venv/
+clients/ios/.build/
+clients/ios/.swiftpm/
 *.db
 # Local biometric test output; keep it out of version control.
 /output.png

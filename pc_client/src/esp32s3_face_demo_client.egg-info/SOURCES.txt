@@ -10,10 +10,15 @@ src/pc_client/__main__.py
 src/pc_client/assembler.py
 src/pc_client/ble_client.py
 src/pc_client/database.py
+src/pc_client/event_store.py
 src/pc_client/face_engine.py
 src/pc_client/protocol.py
 src/pc_client/recognizer.py
+tests/test_cpp_event_protocol.py
 tests/test_database.py
+tests/test_event_protocol.py
+tests/test_event_store.py
+tests/test_face_batch.py
 tests/test_jpeg_decode.py
 tests/test_protocol.py
 tests/test_protocol_consistency.py

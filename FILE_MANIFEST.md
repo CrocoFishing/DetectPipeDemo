@@ -15,6 +15,22 @@ Generated source and documentation files are grouped below. Generated ESP-IDF `b
 
 ## Firmware
 
+- `firmware/components/wifi_sd_export/`: BLE-controlled SoftAP/HTTP snapshot export, streamed manifest, path/range validation, session lifecycle and cleanup.
+- `firmware/apps/event1_audio_face/main/sd_export_integration.*`: Event/capture admission, metadata barrier and audio suspend/resume coordination.
+
+## SD export and iOS
+
+- `clients/ios/`: SwiftPM library, existing BLE wire helpers, connected-peripheral export link, foreground hotspot/download coordinator, journaled HTTP downloader, Event reference types and tests.
+- `docs/EVENT_DATA_MODEL.md`: normative SD CSV/WAV structure, identity, timing, terminal/sentinel and incomplete-Event semantics.
+- `docs/IOS_SD_EXPORT.md`: iOS integration, permissions, resumable download and validation instructions.
+- `tests/event1/export_coordination_test.cpp`: production export coordinator host scenarios.
+- `tests/event1/SD_EXPORT_HARDWARE_TEST_PLAN.md`: iPhone/SD/radio/resource acceptance matrix.
+- `tools/test_sd_export_core.ps1`: portable export path/range/manifest/receipt checks.
+- `tools/smoke_sd_export_ble.py`: exact-device hardware START/READY/CANCEL/resume checks without logging credentials or changing the client Wi-Fi network.
+- `tests/event1/recorder_queue_test.c`: actual recorder producer/FIFO checks for SD stalls, packet ownership and reserved END capacity.
+
+## Firmware baseline
+
 - `firmware/sdkconfig.defaults`
 - `firmware/sdkconfig.ble.defaults`
 - `firmware/partitions.csv`
