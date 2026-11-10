@@ -77,3 +77,8 @@ def test_invalid_status_and_counter_payloads_are_rejected() -> None:
         )
     with pytest.raises(ProtocolError, match="trigger"):
         EventOpen.decode(struct.pack("<QB7x", EID, 99))
+
+
+def test_prior_batch_error_is_valid_with_successful_latest_batch() -> None:
+    value = EventComplete(EID, EventStatus.COMPLETE_WITH_ERROR, AudioStatus.READY, FaceStatus.COMPLETED)
+    assert EventComplete.decode(value.encode()) == value

@@ -1,5 +1,14 @@
 # Troubleshooting
 
+## Recurring Events and file deletion
+
+- Long noisy Events: MODE_0, 1000 ms non-speech and a five-minute audio cap are current defaults. Pre-roll is additional. After the cap, VAD must report non-speech before another Event; periodic recognition does not split WAVs.
+- Missing 30-second capture: a pending batch, unavailable camera/client, export gate or ended Event skips admission. There is no catch-up queue. Per-round receiver-NO_FACE retries have priority over that slot and stop after three recaptures.
+- Phone finds no face: send RecognitionResult status 2 with the current request/image IDs, empty person ID and zero similarity. UNKNOWN is an identity miss, FAILED is a processing error; neither requests a retry. Model integration is in the host App, not bundled in the Swift SD package.
+- Repeated face_index zero: expected for different requests under the same Event. Group by `(event_id, request_id)` and preserve previous batches instead of overwriting them.
+- DELETE 428/412: obtain the current session manifest and send its quoted ETag in If-Match. DELETE 409 can mean a directory or closing/wrong session. GET/POST complete never delete files. After a successful DELETE, regenerate the manifest before POST complete or close a deletion-only session with CANCEL.
+- Deleted WAV still has CSV metadata: expected; single-file deletion does not rewrite shared CSVs. Relist after an uncertain HTTP result before retrying deletion.
+
 - `idf.py` not found: always call `tools/idf.ps1`; it activates `C:\Espressif\tools\Microsoft.v6.0.PowerShell_profile.ps1` inside the command process.
 - PowerShell script policy: invoke tools with `powershell.exe -ExecutionPolicy Bypass -File ...`.
 - Wrong boot mode: release BOOT/GPIO0 before reset. The application uses only external D1/GPIO2 after startup.

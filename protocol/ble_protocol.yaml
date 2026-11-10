@@ -124,6 +124,8 @@ feature_flags:
   RSSI_METRICS: 0x00000010
   EVENT_ASSOCIATION: 0x00000020
   WIFI_SD_EXPORT: 0x00000040
+  EVENT_MULTI_BATCH: 0x00000080
+  SD_FILE_DELETE: 0x00000100
 header_fields:
   - {name: magic, type: uint32, offset: 0, length: 4}
   - {name: protocol_version, type: uint8, offset: 4, length: 1}
@@ -235,6 +237,26 @@ limits:
   person_name_utf8_bytes: 64
   notification_retries: 3
   rssi_samples_per_second: 1
+event_recognition:
+  interval_ms: 30000
+  maximum_audio_duration_ms: 300000
+  preroll_additional: true
+  client_no_face_status: 2
+  maximum_client_recaptures_per_round: 3
+  periodic_busy_policy: skip_without_backlog
+  batch_key: [event_id, request_id]
+  face_sequence_key: [event_id, request_id, face_index]
+  earlier_batch_errors_preserved: true
+sd_file_delete:
+  method: DELETE
+  route: /v1/export/file
+  path_query: percent_encoded_relative_utf8
+  headers: [Authorization, X-Export-Session, If-Match]
+  request_body: empty
+  scope: one_regular_file
+  requires_paused_session: true
+  invalidates_manifest: true
+  automatic_after_download: false
 compatibility:
   unknown_message: reject
   unsupported_major_version: reject

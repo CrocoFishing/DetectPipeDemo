@@ -9,6 +9,7 @@ struct CaptureRequest {
     int64_t created_at_us;
     bool has_event{false};
     uint64_t event_id{0};
+    uint8_t client_recaptures{0};
 };
 inline const char* trigger_source_name(TriggerSource s) {
     switch (s) {

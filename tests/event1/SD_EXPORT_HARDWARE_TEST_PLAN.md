@@ -18,6 +18,11 @@ Use the integrated `event1_audio_face` image and an iPhone running iOS 16 or lat
 | Scenario | Acceptance |
 |---|---|
 | Full export | Local path/size/SHA-256 inventory exactly matches the card; manifest terminal/count/digest verified; source files unchanged. |
+| Explicit file deletion | Current session/token/If-Match removes only the named regular file, returns receipt, invalidates manifest; new manifest excludes it; other bytes unchanged. |
+| Delete rejection | Wrong token/session, missing/wrong If-Match, traversal/encoded traversal, directory/root, missing file and nonempty body never unlink another file; expected HTTP errors. |
+| Delete then complete | Old manifest receipt rejected; regenerated manifest receipt accepted; DELETE after accepted completion is refused. |
+| Delete response lost / multi-file partial failure | App retains confirmed deletedPaths, reports uncertain last outcome, no atomic-success claim or automatic deletion after download; relisting resolves state. |
+| Delete CSV / WAV then resume | Missing CSV gets a new header on next append; deleted history is not recreated; Event IDs remain unique and new WAVs record normally after CANCELLED. |
 | Empty card | Valid empty manifest and completion; recording resumes. |
 | FAT32 file above 2 GiB | Manifest size/hash and resumed Range beyond signed 32-bit offset match the original; include a file near the FAT32 per-file limit when storage permits. |
 | Active utterance/recognition | Already admitted work finishes normally; final lifecycle/face/audio rows are present before READY; new manual triggers return BUSY. |

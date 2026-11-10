@@ -18,7 +18,14 @@ def reconstruct(directory: Path, *, verify_wav: bool = True) -> list[dict[str, A
         if not re.fullmatch(r"[0-9A-F]{16}", key) or int(key, 16) == 0:
             raise ValueError(f"invalid Event ID: {key}")
         return events.setdefault(
-            key, {"event_id": key, "lifecycle": [], "audio": None, "faces": []}
+            key,
+            {
+                "event_id": key,
+                "lifecycle": [],
+                "audio": None,
+                "faces": [],
+                "face_batches": [],
+            },
         )
 
     def rows(name: str) -> list[dict[str, str]]:
@@ -97,9 +104,12 @@ def reconstruct(directory: Path, *, verify_wav: bool = True) -> list[dict[str, A
             previous = request_owners.setdefault(request_key, key)
             if previous != key:
                 raise ValueError("capture request crossed Event owners")
-            if event.get("request_id", request_id) != request_id:
-                raise ValueError("Event has multiple capture requests")
             event["request_id"] = request_id
+        batches = event["face_batches"]
+        batch = next((b for b in batches if b["request_id"] == request_id), None)
+        if batch is None:
+            batch = {"request_id": request_id, "faces": []}
+            batches.append(batch)
         if image_id:
             if not request_id or not 0 <= index < count:
                 raise ValueError("invalid face sequence")
@@ -107,21 +117,25 @@ def reconstruct(directory: Path, *, verify_wav: bool = True) -> list[dict[str, A
             if image_key in image_owners:
                 raise ValueError("duplicate/crossed image owner")
             image_owners[image_key] = key, request_id
-            if any(int(f["face_index"]) == index for f in event["faces"]):
+            if any(int(f["face_index"]) == index for f in batch["faces"]):
                 raise ValueError("duplicate face index")
-            if event["faces"] and int(event["faces"][0]["face_count"]) != count:
-                raise ValueError("face_count changed within Event")
+            if batch["faces"] and int(batch["faces"][0]["face_count"]) != count:
+                raise ValueError("face_count changed within request")
             event["faces"].append(row)
+            batch["faces"].append(row)
         elif index != -1 or count < 0:
             raise ValueError("invalid terminal sentinel")
         else:
-            if "batch_terminal_status" in event:
+            if "status" in batch:
                 raise ValueError("duplicate batch terminal sentinel")
+            batch["status"] = row["status"]
+            batch["expected_face_count"] = count
             event["batch_terminal_status"] = row["status"]
             event["face_status"] = row["status"]
             event["expected_face_count"] = count
     for event in events.values():
-        event["faces"].sort(key=lambda f: int(f["face_index"]))
+        for batch in event["face_batches"]:
+            batch["faces"].sort(key=lambda f: int(f["face_index"]))
         for transition in event["lifecycle"]:
             if transition["state"] == "FACE_BATCH_END":
                 event["face_status"] = transition["status"]
@@ -132,15 +146,29 @@ def reconstruct(directory: Path, *, verify_wav: bool = True) -> list[dict[str, A
             errors = []
             transitions = event["lifecycle"]
             states = [row["state"] for row in transitions]
-            for required in ("OPEN", "AUDIO_READY", "FACE_BATCH_END", "COMPLETE"):
+            for required in ("OPEN", "AUDIO_READY", "COMPLETE"):
                 if states.count(required) != 1:
                     errors.append(
                         f"missing or duplicated {required} lifecycle evidence"
                     )
+            batches = event["face_batches"]
+            if (
+                not batches
+                or states.count("FACE_BATCH_END") != len(batches)
+                or any("status" not in b for b in batches)
+            ):
+                errors.append(
+                    "missing or duplicated FACE_BATCH_END lifecycle/sentinel evidence"
+                )
+            if [
+                row["status"] for row in transitions if row["state"] == "FACE_BATCH_END"
+            ] != [batch.get("status") for batch in batches]:
+                errors.append("face batch lifecycle statuses disagree with sentinels")
             if not errors:
                 if states.index("OPEN") != 0 or any(
-                    states.index(branch) > states.index("COMPLETE")
-                    for branch in ("AUDIO_READY", "FACE_BATCH_END")
+                    i > states.index("COMPLETE")
+                    for i, state in enumerate(states)
+                    if state in ("AUDIO_READY", "FACE_BATCH_END", "FACE_BATCH_OPEN")
                 ):
                     errors.append("lifecycle transitions out of order")
                 audio_transition = next(
@@ -166,14 +194,16 @@ def reconstruct(directory: Path, *, verify_wav: bool = True) -> list[dict[str, A
                 raise ValueError("successful COMPLETE lacks READY audio")
             if event.get("face_status") not in ("COMPLETED", "NO_FACE"):
                 raise ValueError("successful COMPLETE lacks successful face terminal")
-            if event["faces"] and len(event["faces"]) != int(
-                event["faces"][0]["face_count"]
-            ):
-                raise ValueError("successful COMPLETE missing face associations")
-            if event["face_status"] == "COMPLETED" and len(event["faces"]) != event.get(
-                "expected_face_count"
-            ):
-                raise ValueError("successful COMPLETE disagrees with batch count")
+            for batch in event["face_batches"]:
+                if batch.get("status") not in ("COMPLETED", "NO_FACE"):
+                    raise ValueError("successful COMPLETE contains failed batch")
+                if len(batch["faces"]) != batch.get("expected_face_count"):
+                    raise ValueError("successful COMPLETE disagrees with batch count")
+                if any(
+                    face["status"] not in ("RECOGNIZED", "UNKNOWN")
+                    for face in batch["faces"]
+                ):
+                    raise ValueError("successful COMPLETE contains failed recognition")
     if not events:
         raise ValueError("no Event metadata found")
     return [events[key] for key in sorted(events)]

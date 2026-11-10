@@ -5,6 +5,20 @@
 
 using namespace demo::sd_export;
 int main() {
+    unsigned inspected = 0, removed = 0;
+    auto inspect = [&] { ++inspected; return FileKind::Regular; };
+    auto remove = [&] { ++removed; return true; };
+    assert(delete_regular_file("../file", "\"a\"", "\"a\"", inspect, remove) == DeleteResult::InvalidPath);
+    assert(delete_regular_file("file", "", "\"a\"", inspect, remove) == DeleteResult::MatchRequired);
+    assert(delete_regular_file("file", "\"old\"", "\"a\"", inspect, remove) == DeleteResult::MatchFailed);
+    assert(!inspected && !removed);
+    for (auto kind : {FileKind::Directory, FileKind::Missing, FileKind::Error}) {
+        const auto result = delete_regular_file("file", "\"a\"", "\"a\"", [=] { return kind; }, remove);
+        assert(result != DeleteResult::Deleted && removed == 0);
+    }
+    assert(delete_regular_file("nested/file", "\"a\"", "\"a\"", inspect, remove) == DeleteResult::Deleted);
+    assert(inspected == 1 && removed == 1);
+    assert(delete_regular_file("file", "\"a\"", "\"a\"", inspect, [] { return false; }) == DeleteResult::IoError);
     std::string path;
     assert(decode_path("nested%2F.hidden%20file.wav", path) && path == "nested/.hidden file.wav");
     assert(decode_path("%E8%AA%9E%E9%9F%B3%2B1.wav", path) && path == "\xE8\xAA\x9E\xE9\x9F\xB3+1.wav");

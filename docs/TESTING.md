@@ -1,5 +1,7 @@
 # Testing Guide
 
+Recurring Event/file-management regressions: run `tools/test_event_ledger.ps1`, `tools/test_sd_export_core.ps1`, `tests/event1/run_audio_tests.ps1`, and Python `pytest pc_client/tests tests/event1 -q` from the repository venv. Event tests cover 30-second cadence/skip behavior, no scheduling at five minutes, bounded NO_FACE retries, prior-error retention, multiple batches, duplicate/stale ownership and lossless old-database migration. Deletion core tests verify that path/ETag/directory/missing-file checks prevent unlink. Inspect SD fixtures with `tools/inspect_event_sd.py`. Swift contract tests require Xcode/iOS SDK; Windows does not establish Swift compilation or iPhone behavior. Hardware cases E1-16 onward and SD delete cases are required separately.
+
 Run phases in order and copy each template to `results/phaseNN/actual/` before recording. Never mark a hardware test PASS from build output alone.
 
 Common firmware commands:

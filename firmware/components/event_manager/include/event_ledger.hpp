@@ -19,6 +19,7 @@ public:
             c.event_id = (static_cast<uint64_t>(boot_session_) << 32) | ++sequence_;
             c.vad_start_sample = sample;
             c.vad_start_timestamp_us = timestamp_us;
+            c.next_face_timestamp_us = timestamp_us + EVENT_FACE_INTERVAL_US;
             ++active_;
             if (active_ > high_water_) high_water_ = active_;
             return &c;

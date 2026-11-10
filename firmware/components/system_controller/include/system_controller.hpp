@@ -51,7 +51,7 @@ private:
                  uint16_t unknown = 0, uint16_t failed = 0);
     void finish_face_batch(const CaptureRequest& request, FaceBatchStatus status,
                            uint16_t expected_faces, uint16_t recognized = 0,
-                           uint16_t unknown = 0, uint16_t failed = 0);
+                           uint16_t unknown = 0, uint16_t failed = 0, bool client_no_face = false);
     bool await_result(const CaptureRequest& request, uint32_t image_id,
                       uint16_t face_index, uint16_t face_count, uint8_t& result_status,
                       protocol::ErrorCode& error);

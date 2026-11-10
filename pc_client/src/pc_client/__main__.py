@@ -55,6 +55,8 @@ def engine(model: str) -> InsightFaceEngine:  # InsightFace import is intentiona
 
 
 async def run_client(args: argparse.Namespace) -> None:
+    from .face_engine import NoFaceError
+
     face_engine = engine(args.model)
     database = FaceDatabase(args.database)
     session: BleFaceSession
@@ -68,6 +70,11 @@ async def run_client(args: argparse.Namespace) -> None:
             person_id = found.person_id
             person_name = found.person_name
             similarity = found.similarity
+        except NoFaceError:
+            status = StatusCode.NO_FACE
+            person_id = ""
+            person_name = "NO_FACE"
+            similarity = 0.0
         except Exception as exc:
             logging.exception("recognition failed")
             status = StatusCode.FAILED

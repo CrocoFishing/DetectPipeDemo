@@ -57,6 +57,10 @@ int main() {
     protocol::EventCompletePayload parsed_complete;
     assert(protocol::encode_payload(invalid_complete, bytes.data(), bytes.size()) == 16);
     assert(!protocol::decode_payload(bytes.data(), 16, parsed_complete));
+    protocol::EventCompletePayload prior_error{id, protocol::EventStatus::CompleteWithError,
+        protocol::AudioStatus::Ready, protocol::FaceStatus::Completed};
+    assert(protocol::encode_payload(prior_error, bytes.data(), bytes.size()) == 16);
+    assert(protocol::decode_payload(bytes.data(), 16, parsed_complete));
     protocol::SdExportStatusPayload export_status{id, protocol::SdExportState::Ready, protocol::ErrorCode::None};
     protocol::SdExportStatusPayload parsed_export;
     assert(protocol::encode_payload(export_status, bytes.data(), bytes.size()) == 16);

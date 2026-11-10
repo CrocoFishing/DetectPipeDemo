@@ -163,8 +163,8 @@ int BleTransport::gatt_access(uint16_t, uint16_t attr, ble_gatt_access_ctxt* ctx
             static_cast<unsigned>(protocol::VERSION), board::FIRMWARE_VERSION, board::BUILD_ID, board::DETECTOR_MODEL_NAME,
             static_cast<unsigned>(board::MAX_JPEG_BYTES),
             static_cast<unsigned long>(0x1fU |
-                (instance->event_association_enabled_ ? static_cast<uint32_t>(protocol::EventAssociation) : 0U) |
-                (export_enabled ? static_cast<uint32_t>(protocol::WifiSdExport) : 0U)));
+                (instance->event_association_enabled_ ? static_cast<uint32_t>(protocol::EventAssociation | protocol::EventMultiBatch) : 0U) |
+                (export_enabled ? static_cast<uint32_t>(protocol::WifiSdExport | protocol::SdFileDelete) : 0U)));
         const size_t info_length = std::min<size_t>(sizeof(info) - 1, static_cast<size_t>(std::max(0, n)));
         return os_mbuf_append(ctxt->om, info, static_cast<uint16_t>(info_length)) == 0 ? 0 : BLE_ATT_ERR_INSUFFICIENT_RES;
     }

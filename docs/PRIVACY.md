@@ -1,5 +1,7 @@
 # Security and Privacy
 
+Explicit SD deletion is available only inside the same authenticated, recording-paused Wi-Fi session as export. Its bearer token/session/If-Match protect against wrong-session or stale-file requests; the prototype's BLE credential-read security limitations still apply. Apps should expose deletion as a deliberate user action, retain partial outcomes, and never infer delete authorization from download completion. Individual WAV deletion leaves shared metadata rows; CSV deletion removes that file's local history, and downloaded copies/PC identity databases are unaffected.
+
 This repository defaults to **development mode**: pairing and encryption are not required, and an unpaired client can write Recognition Result. Settings are centralized in `components/board_support/include/board_config.hpp`, not scattered. This is suitable only for a controlled demo.
 
 Without authenticated encryption, a nearby client can connect, trigger captures, observe cropped JPEGs, or forge a recognition result. A product must require LE Secure Connections pairing/bonding, encrypted authenticated Control/Result writes, one authorized peer identity, key rotation/removal, replay protection beyond recent request IDs, and an application signature/MAC or secure session over GATT. It should not trust a display name as identity.

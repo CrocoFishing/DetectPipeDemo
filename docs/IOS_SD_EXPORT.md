@@ -6,6 +6,20 @@
 
 ## 加入 App
 
+新增能力為 `EVENT_MULTI_BATCH=0x80` 與 `SD_FILE_DELETE=0x100`。既有 v2 header/payload 長度不變，但 App 必須支援同一 Event 的多個 request：每個 EVENT_OPEN 建立／查找 `(event_id, request_id)` batch，相同 pair 視為重送，不要重建音訊或清空舊 faces；FACE_BATCH_END 只結束該 request。EVENT_COMPLETE 等待音訊及全部已接受 batch，face status 是最後一輪摘要，早期失敗可使整體維持 COMPLETE_WITH_ERROR。
+
+若手機模型在有效 JPEG 中偵測到零張臉，將 `RecognitionResult.noFace(requestID:imageID:processingTimeMs:).encodedPacket()` 寫入 Recognition Result characteristic（withResponse）。找到臉但資料庫無匹配使用 `.unknown`；解碼／推論錯誤使用 `.failed`，不要都回 `.noFace`。韌體會完成當輪其他臉後，最多重拍 3 次完整 frame，使用新 request/image ID，原 Event ID 不變。SDK 不包含手機的人臉模型或完整 App；模型呼叫端須接上這個明確回覆。
+
+明確刪檔使用同一個 coordinator，與 exportAll 序列化執行：
+
+```swift
+let result = try await coordinator.deleteFiles(paths: ["event_0000002500000068.wav"])
+// result.deletedPaths 是已收到刪除確認的路徑。
+// 只有 deviceRestored == true 才能顯示錄音已恢復。
+```
+
+此 API 先檢查 SD_FILE_DELETE 能力（舊韌體回 unsupportedDevice），再取得新 session／manifest，再逐筆送出有 Authorization、X-Export-Session、If-Match 的 `DELETE /v1/export/file?path=...`。不會因下載成功而自動刪除。只接受 manifest 中的指定一般檔案，不支援目錄、整張卡清空或自動改寫共用 CSV。若中途失敗，`partialDeletion(deletedPaths:reason:)` 保留已確認刪除清單；最後一筆若 response 遺失，結果可能不確定，先重新列檔，不能宣稱多檔操作原子成功／失敗。刪除後舊 manifest 失效；刪檔專用 session 以 BLE CANCEL 結束並等待 CANCELLED，恢復失敗仍須呈現狀態。背景切換時取消 Task，已完成的刪除不會回復。
+
 以 local Swift Package 加入 `clients/ios`，產品為 `EventPipeSDExport`；或將 `BLEProtocol.swift`、`SDExportBLELink.swift`、`SDExportClient.swift`、`EventDataTypes.swift` 加入既有 App target。`SDExportExample.swift` 是需接到 App BLE owner／UI 的參考程式，沒有完整 App、掃描配對頁或 Xcode App project。
 
 啟用 **Hotspot Configuration** capability，entitlement：

@@ -64,7 +64,7 @@ public struct SDStoredAudioEvent: Sendable {
 
 public enum SDStoredAudioStatus: String, Codable, Sendable { case ready = "READY", failed = "FAILED" }
 public enum SDStoredFaceResultStatus: String, Codable, Sendable {
-    case recognized = "RECOGNIZED", unknown = "UNKNOWN", failed = "FAILED"
+    case recognized = "RECOGNIZED", unknown = "UNKNOWN", clientNoFace = "CLIENT_NO_FACE", failed = "FAILED"
 }
 public enum SDStoredFaceBatchStatus: String, Codable, Sendable {
     case completed = "COMPLETED", noFace = "NO_FACE", partial = "PARTIAL", busy = "BUSY"
@@ -116,5 +116,20 @@ public struct SDStoredLifecycleTransition: Sendable {
 
     public init(eventID: SDStoredEventID, state: String, timestampUs: Int64, status: String) {
         self.eventID = eventID; self.state = state; self.timestampUs = timestampUs; self.status = status
+    }
+}
+
+/// One audio owner, multiple capture requests. Each request restarts faceIndex
+/// at zero; retain every batch and attempt instead of overwriting prior faces.
+public struct SDStoredEvent: Sendable {
+    public let eventID: SDStoredEventID
+    public var audio: SDStoredAudioEvent?
+    public var faceBatches: [SDStoredFaceBatchTerminal]
+    public var faces: [SDStoredFaceAssociation]
+
+    public init(eventID: SDStoredEventID, audio: SDStoredAudioEvent? = nil,
+                faceBatches: [SDStoredFaceBatchTerminal] = [], faces: [SDStoredFaceAssociation] = []) {
+        self.eventID = eventID; self.audio = audio
+        self.faceBatches = faceBatches; self.faces = faces
     }
 }

@@ -101,7 +101,7 @@ bool decode_payload(const uint8_t* p, size_t len, EventCompletePayload& v) {
     const auto expected = v.audio_status == AudioStatus::Ready &&
         (v.face_status == FaceStatus::Completed || v.face_status == FaceStatus::NoFace)
         ? EventStatus::Complete : EventStatus::CompleteWithError;
-    return v.event_id != 0 && v.event_status == expected;
+    return v.event_id != 0 && (v.event_status == EventStatus::CompleteWithError || v.event_status == expected);
 }
 
 size_t encode_header(const PacketHeader& h, uint8_t* out, size_t cap) {

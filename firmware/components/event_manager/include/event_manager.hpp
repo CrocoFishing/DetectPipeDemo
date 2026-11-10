@@ -27,6 +27,7 @@ private:
     static void on_face(const FaceAssociation& face, void* ctx);
     static void task_entry(void* ctx);
     void run();
+    void start_face_batch(size_t index, bool initial, bool retry);
     void publish_open(const EventContext& c);
     void publish_audio(const EventContext& c);
     void publish_batch(const EventContext& c, const FaceBatchResult& batch);

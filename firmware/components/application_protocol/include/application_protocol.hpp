@@ -46,6 +46,7 @@ enum FeatureFlag : uint32_t {
     ExternalButton = 1U << 0, BleTrigger = 1U << 1, FaceDetection = 1U << 2,
     CroppedJpeg = 1U << 3, RssiMetrics = 1U << 4, EventAssociation = 1U << 5,
     WifiSdExport = 1U << 6,
+    EventMultiBatch = 1U << 7, SdFileDelete = 1U << 8,
 };
 
 struct PacketHeader {

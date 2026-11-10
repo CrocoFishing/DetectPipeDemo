@@ -255,7 +255,8 @@ class BleFaceSession:
                 event_id = self._event_for_request(packet.header.request_id)
                 if event_id is not None:
                     row = self.event_store.event(event_id)
-                    if row["opened_at"] is None or row["face_terminal_received"] or row["completed_at"]:
+                    batch = self.event_store.batch(event_id, packet.header.request_id)
+                    if row["opened_at"] is None or batch["face_terminal_received"] or row["completed_at"]:
                         raise ProtocolError("image began before OPEN or after face terminal")
                 self.assembler.begin(packet)
                 self.started = time.perf_counter()
@@ -320,11 +321,12 @@ class BleFaceSession:
                     self._event_requests[packet.header.request_id] = event_id
             else:
                 self._open_events.discard(event_id)
-                if row["request_id"]:
-                    self._event_requests.pop(row["request_id"], None)
-                    self._owned_images = {
-                        key: owner for key, owner in self._owned_images.items() if owner != event_id
-                    }
+                self._event_requests = {
+                    key: owner for key, owner in self._event_requests.items() if owner != event_id
+                }
+                self._owned_images = {
+                    key: owner for key, owner in self._owned_images.items() if owner != event_id
+                }
         if packet.header.message_type is MessageType.EVENT_OPEN:
             value = EventOpen.decode(packet.payload)
             LOG.info(

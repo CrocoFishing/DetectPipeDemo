@@ -13,6 +13,7 @@
 #include "nvs_flash.h"
 
 namespace demo {
+static_assert(EVENT_MAX_DURATION_US == static_cast<int64_t>(AUDIO_EVENT_MAX_DURATION_MS) * 1000);
 namespace { constexpr char TAG[] = "event_manager"; }
 
 esp_err_t EventManager::initialize(SystemController& controller) {
@@ -213,7 +214,8 @@ void EventManager::save_face(const FaceAssociation& f) {
     person[n++] = '"';
     person[n] = 0;
     char row[256];
-    const char* status = f.status == 0 ? "RECOGNIZED" : f.status == 1 ? "UNKNOWN" : "FAILED";
+    const char* status = f.status == 0 ? "RECOGNIZED" : f.status == 1 ? "UNKNOWN" :
+        f.status == 2 ? "CLIENT_NO_FACE" : "FAILED";
     std::snprintf(row, sizeof(row), "%016" PRIX64 ",%" PRIu32 ",%" PRIu32 ",%u,%u,%s,%s,%.6f,%" PRIu32,
                   f.event_id, f.request_id, f.image_id, f.face_index, f.face_count, status, person,
                   static_cast<double>(f.similarity), f.processing_time_ms);
@@ -222,6 +224,37 @@ void EventManager::save_face(const FaceAssociation& f) {
              f.event_id, f.request_id, f.image_id, f.face_index, f.face_count, status);
 }
 
+void EventManager::start_face_batch(size_t i, bool initial, bool retry) {
+    EventContext c;
+    portENTER_CRITICAL(&mux_);
+    c = ledger_.contexts()[i];
+    const bool blocked = !initial && (export_pending_ || c.vad_ended ||
+        c.face_status == FaceBatchStatus::Pending ||
+        esp_timer_get_time() >= c.vad_start_timestamp_us + EVENT_MAX_DURATION_US);
+    portEXIT_CRITICAL(&mux_);
+    if (!c.event_id || blocked) return;
+    FaceBatchStatus immediate = FaceBatchStatus::Pending;
+    uint32_t request = 0;
+    if (!camera_available_) immediate = FaceBatchStatus::Failed;
+    else if (!controller_->event_client_ready()) immediate = FaceBatchStatus::Disconnected;
+    else {
+        const auto submitted = controller_->submit_event_capture(c.event_id, request);
+        if (submitted != SubmitResult::Accepted)
+            immediate = submitted == SubmitResult::Busy ? FaceBatchStatus::Busy : FaceBatchStatus::Failed;
+    }
+    // Later slots that cannot acquire the camera are skipped, never queued.
+    // A pending client retry may try admission again until VAD ends.
+    if (!initial && immediate != FaceBatchStatus::Pending) return;
+    portENTER_CRITICAL(&mux_);
+    auto& stored = ledger_.contexts()[i];
+    begin_face_batch(stored, request, retry);
+    c = stored;
+    portEXIT_CRITICAL(&mux_);
+    publish_open(c); // Same Event, new request ownership; no new audio owner.
+    lifecycle(c, initial ? "OPEN" : "FACE_BATCH_OPEN", retry ? "CLIENT_NO_FACE_RETRY" : "OK");
+    if (immediate != FaceBatchStatus::Pending)
+        on_batch({c.event_id, request, 0, 0, 0, 0, 0, immediate}, this);
+}
 void EventManager::task_entry(void* ctx) { static_cast<EventManager*>(ctx)->run(); }
 void EventManager::run() {
     int64_t metrics_at = 0;
@@ -237,26 +270,12 @@ void EventManager::run() {
             p = pending_[i];
             pending_[i].dirty = 0;
             portEXIT_CRITICAL(&mux_);
-            if (!c.event_id || !p.dirty) continue;
+            if (!c.event_id) continue;
             if (p.dirty & OpenDirty) {
-                FaceBatchStatus immediate = FaceBatchStatus::Pending;
-                if (!camera_available_) immediate = FaceBatchStatus::Failed;
-                else if (!controller_->event_client_ready()) immediate = FaceBatchStatus::Disconnected;
-                else {
-                    uint32_t request_id = 0;
-                    auto submitted = controller_->submit_event_capture(c.event_id, request_id);
-                    if (submitted == SubmitResult::Accepted) c.request_id = request_id;
-                    else immediate = submitted == SubmitResult::Busy ? FaceBatchStatus::Busy : FaceBatchStatus::Failed;
-                }
+                start_face_batch(i, true, false);
                 portENTER_CRITICAL(&mux_);
-                ledger_.contexts()[i].request_id = c.request_id;
+                c = ledger_.contexts()[i];
                 portEXIT_CRITICAL(&mux_);
-                publish_open(c);
-                lifecycle(c, "OPEN", "OK");
-                if (immediate != FaceBatchStatus::Pending) {
-                    p.face = {c.event_id, c.request_id, 0, 0, 0, 0, 0, immediate};
-                    p.dirty |= FaceDirty;
-                }
             }
             if (p.dirty & AudioDirty) {
                 // Revalidate consumption after publish may have yielded to another callback.
@@ -272,7 +291,9 @@ void EventManager::run() {
                 }
             }
             if (p.dirty & FaceDirty) {
-                if (apply_face_terminal(c, p.face)) publish_batch(c, p.face);
+                if (apply_face_terminal(c, p.face)) {
+                    publish_batch(c, p.face);
+                }
                 else {
                     portENTER_CRITICAL(&mux_);
                     ++rejected_callbacks_;
@@ -280,7 +301,6 @@ void EventManager::run() {
                     ESP_LOGE(TAG, "STALE_BATCH,event_id=%016" PRIX64 ",request_id=%" PRIu32, p.face.event_id, p.face.request_id);
                 }
             }
-            const bool complete = refresh_event_state(c, p.face.failed_count);
             // Merge terminal state without overwriting a concurrently received VAD_END.
             portENTER_CRITICAL(&mux_);
             auto& stored = ledger_.contexts()[i];
@@ -289,9 +309,11 @@ void EventManager::run() {
             stored.audio_first_sample = c.audio_first_sample;
             stored.audio_last_sample = c.audio_last_sample;
             stored.face_status = c.face_status;
+            stored.face_had_error = c.face_had_error;
+            stored.face_retry_pending = !stored.vad_ended && c.face_retry_pending;
             stored.expected_face_count = c.expected_face_count;
             stored.completed_face_count = c.completed_face_count;
-            if (complete) stored.state = c.state;
+            const bool complete = refresh_event_state(stored);
             c = stored;
             portEXIT_CRITICAL(&mux_);
             if (complete) {
@@ -300,6 +322,15 @@ void EventManager::run() {
                 ledger_.release(c.event_id);
                 pending_[i] = {};
                 portEXIT_CRITICAL(&mux_);
+            } else {
+                const int64_t now = esp_timer_get_time();
+                bool due = false;
+                portENTER_CRITICAL(&mux_);
+                auto& active = ledger_.contexts()[i];
+                due = face_slot_due(active, now);
+                const bool retry = active.face_retry_pending;
+                portEXIT_CRITICAL(&mux_);
+                if (retry || due) start_face_batch(i, false, retry);
             }
         }
         // Acknowledge only after the sole consumer enqueued its last metadata.

@@ -15,6 +15,7 @@ public:
     bool receive(CaptureRequest& request, TickType_t wait);
     SubmitResult submit_ble(uint32_t request_id);
     SubmitResult submit_event(uint64_t event_id, uint32_t& request_id);
+    SubmitResult submit_recapture(const CaptureRequest& previous, uint32_t& request_id);
     void complete();
     void set_active(uint32_t image_id, SystemState state);
     // Blocks manual requests while already admitted Event owners finish.

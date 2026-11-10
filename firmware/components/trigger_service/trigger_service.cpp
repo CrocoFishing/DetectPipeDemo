@@ -78,6 +78,14 @@ SubmitResult TriggerService::submit_event(uint64_t event_id, uint32_t& request_i
     if (result == SubmitResult::Accepted) request_id = request.request_id;
     return result;
 }
+SubmitResult TriggerService::submit_recapture(const CaptureRequest& previous, uint32_t& request_id) {
+    request_id = 0;
+    CaptureRequest request{next_generated_id(), previous.trigger_source, esp_timer_get_time()};
+    request.client_recaptures = previous.client_recaptures + 1;
+    const auto result = submit(request);
+    if (result == SubmitResult::Accepted) request_id = request.request_id;
+    return result;
+}
 bool TriggerService::receive(CaptureRequest& r, TickType_t wait) { return xQueueReceive(queue_, &r, wait) == pdTRUE; }
 void TriggerService::complete() { portENTER_CRITICAL(&mux_); busy_ = false; active_image_id_ = 0; active_state_ = SystemState::Idle; portEXIT_CRITICAL(&mux_); }
 void TriggerService::set_active(uint32_t id, SystemState s) { portENTER_CRITICAL(&mux_); active_image_id_ = id; active_state_ = s; portEXIT_CRITICAL(&mux_); }

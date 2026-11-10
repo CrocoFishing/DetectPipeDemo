@@ -59,6 +59,8 @@ class FeatureFlag(enum.IntFlag):
     RSSI_METRICS = 0x00000010
     EVENT_ASSOCIATION = 0x00000020
     WIFI_SD_EXPORT = 0x00000040
+    EVENT_MULTI_BATCH = 0x00000080
+    SD_FILE_DELETE = 0x00000100
 
 
 class MessageFlag(enum.IntFlag):
@@ -253,7 +255,7 @@ class EventComplete:
             and value.face_status in (FaceStatus.COMPLETED, FaceStatus.NO_FACE)
             else EventStatus.COMPLETE_WITH_ERROR
         )
-        if value.event_status is not expected:
+        if value.event_status is EventStatus.COMPLETE and value.event_status is not expected:
             raise ProtocolError("event completion status disagrees with branches")
         return value
 

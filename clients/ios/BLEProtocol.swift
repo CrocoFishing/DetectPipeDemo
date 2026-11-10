@@ -13,6 +13,8 @@ public enum BLEProtocol {
     public static let deviceInformationUUID = CBUUID(string: "7f510005-b7b2-4f6a-9f3a-6c8a2d7e1000")
     public static let sdExportInfoUUID = CBUUID(string: "7f510006-b7b2-4f6a-9f3a-6c8a2d7e1000")
     public static let wifiSDExportFeature: UInt32 = 0x00000040
+    public static let eventMultiBatchFeature: UInt32 = 0x00000080
+    public static let sdFileDeleteFeature: UInt32 = 0x00000100
 }
 
 public enum MessageType: UInt8 {
@@ -168,6 +170,20 @@ public struct RecognitionResult {
     public let similarity: Float
     public let processingTimeMs: UInt32
 
+    public init(requestID: UInt32, imageID: UInt32, status: StatusCode, personID: String = "",
+                personName: String = "", similarity: Float = 0, processingTimeMs: UInt32 = 0) {
+        self.requestID = requestID; self.imageID = imageID; self.status = status
+        self.personID = personID; self.personName = personName
+        self.similarity = similarity; self.processingTimeMs = processingTimeMs
+    }
+
+    /// Only use when the receiver's detector found zero faces in a valid JPEG.
+    /// An unknown identity uses .unknown; decoding/model errors use .failed.
+    public static func noFace(requestID: UInt32, imageID: UInt32, processingTimeMs: UInt32 = 0) -> RecognitionResult {
+        RecognitionResult(requestID: requestID, imageID: imageID, status: .noFace,
+                          personName: "NO_FACE", processingTimeMs: processingTimeMs)
+    }
+
     public func encodedPacket() -> Data {
         let id = Data(personID.utf8.prefix(32)); let name = Data(personName.utf8.prefix(64))
         var payload = Data([status.rawValue, UInt8(id.count), UInt8(name.count), 0])
@@ -248,7 +264,7 @@ public enum EventPayload {
             }
             let expected: EventStatus = (audio == .ready && (face == .completed || face == .noFace))
                 ? .complete : .completeWithError
-            guard status == expected else { throw ProtocolValidationError.invalidSequence }
+            guard status == .completeWithError || status == expected else { throw ProtocolValidationError.invalidSequence }
             return .complete(eventID: data.uint64LE(at: 0), status: status, audio: audio, face: face)
         default:
             throw ProtocolValidationError.unknownMessage(packet.header.messageType.rawValue)

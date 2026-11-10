@@ -1,5 +1,5 @@
-/* Compile production startup/cleanup; dependencies expose resource ownership
- * and call order without running hardware or processing worker loops. */
+/* Compile production pipeline and VAD transitions; model hardware dependencies
+ * to check resource ownership, recording boundaries and forced completion. */
 #include <assert.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -23,6 +23,11 @@ static host_task_t processing_task;
 static QueueHandle_t live_queue;
 static void *allocations[16];
 static unsigned live_allocations;
+static unsigned event_opens, event_ends, recorder_ends, failed_terminals;
+static bool accept_begin, accept_submit, accept_end, last_producer_failed;
+static uint64_t saved_samples, last_end_sample;
+static int64_t last_end_timestamp;
+static size_t preroll_lag_samples;
 static void record_call(const char *name) {
     assert(call_count < sizeof(calls) / sizeof(calls[0]));
     calls[call_count++] = name;
@@ -31,6 +36,7 @@ static void host_free(void *memory);
 #define free host_free
 #include "../../firmware/components/audio_pipeline/audio_pipeline.c"
 #undef free
+#include "../../firmware/components/vad/vad_service.c"
 
 static unsigned first_call(const char *name) {
     for (unsigned i = 0; i < call_count; ++i) if (!strcmp(calls[i], name)) return i;
@@ -160,6 +166,7 @@ void audio_dsp_deinit(void) {
     record_call("dsp_deinit");
 }
 esp_err_t audio_dsp_set_config(const audio_dsp_config_t *config) { (void)config; return ESP_OK; }
+esp_err_t audio_dsp_set_vad_enabled(bool enabled) { (void)enabled; return ESP_OK; }
 esp_err_t audio_dsp_process(const audio_frame_t *input) { (void)input; return ESP_OK; }
 esp_err_t audio_ring_buffer_init(uint32_t maximum_ms, audio_runtime_stats_t *stats) {
     assert(maximum_ms == MAX_PREROLL_MS && stats && !ring_live);
@@ -180,8 +187,12 @@ esp_err_t audio_ring_buffer_set_preroll(uint32_t ms) { (void)ms; return ESP_OK; 
 void audio_ring_buffer_push(const audio_frame_t *frame) { (void)frame; }
 size_t audio_ring_buffer_copy_event_start(uint64_t sample, int16_t *dest, size_t count,
                                         audio_preroll_metadata_t *metadata) {
-    (void)sample; (void)dest; (void)count; (void)metadata;
-    return 0;
+    (void)dest;
+    const uint64_t first = sample > AUDIO_SAMPLE_RATE_HZ ? sample - AUDIO_SAMPLE_RATE_HZ : 0;
+    size_t copied = (size_t)(sample - first) + preroll_lag_samples;
+    assert(copied <= count);
+    *metadata = (audio_preroll_metadata_t) {.saved_first_sample = first};
+    return copied;
 }
 esp_err_t sd_recorder_init(const sd_recorder_config_t *config) {
     assert(config && config->stats && !recorder_live);
@@ -204,32 +215,47 @@ void sd_recorder_deinit(void) {
 }
 bool sd_recorder_is_running(void) { return recorder_running; }
 bool sd_recorder_event_begin(const audio_frame_t *frame, const sd_event_metadata_t *metadata) {
-    (void)frame; (void)metadata; return false;
+    assert(frame && metadata && metadata->event_id == s_pipeline.event_id);
+    if (accept_begin) saved_samples += frame->sample_count;
+    return accept_begin;
 }
 bool sd_recorder_event_submit(uint64_t event_id, const audio_frame_t *frame) {
-    (void)event_id; (void)frame; return false;
+    assert(event_id == s_pipeline.event_id && frame && frame->sample_count > 0);
+    assert(frame->first_sample_index + frame->sample_count <= s_pipeline.event_end_sample);
+    if (accept_submit) saved_samples += frame->sample_count;
+    return accept_submit;
 }
 bool sd_recorder_event_end(uint64_t event_id, int64_t timestamp, uint64_t sample, bool failed) {
-    (void)event_id; (void)timestamp; (void)sample; (void)failed; return false;
+    assert(event_id == s_pipeline.event_id);
+    ++recorder_ends;
+    last_end_timestamp = timestamp;
+    last_end_sample = sample;
+    last_producer_failed = failed;
+    return accept_end;
 }
 bool sd_recorder_metadata_append(sd_metadata_kind_t kind, const char *row) { (void)kind; (void)row; return false; }
-esp_err_t vad_service_init(const vad_service_config_t *config) { assert(config && config->event_cb); return ESP_OK; }
-esp_err_t vad_service_set_enabled(bool enabled) { (void)enabled; return ESP_OK; }
-void vad_service_set_metrics_enabled(bool enabled) { (void)enabled; }
-void vad_service_on_afe_result(audio_vad_state_t state, int64_t timestamp, uint64_t sample,
-                             size_t cache_bytes, void *ctx) {
-    (void)state; (void)timestamp; (void)sample; (void)cache_bytes; (void)ctx;
-}
 void audio_metrics_set_enabled(bool enabled) { (void)enabled; }
 void audio_metrics_process_raw(const audio_frame_t *frame) { (void)frame; }
 void audio_metrics_process_processed(const audio_frame_t *frame) { (void)frame; }
 
 static uint64_t open_event(int64_t timestamp, uint64_t sample, void *ctx) {
-    (void)timestamp; (void)sample; (void)ctx; return 1;
+    (void)timestamp; (void)sample; (void)ctx; return ++event_opens;
+}
+static void event_end(uint64_t id, int64_t timestamp, uint64_t sample, void *ctx) {
+    (void)timestamp; (void)sample; (void)ctx;
+    assert(id == s_pipeline.event_id);
+    ++event_ends;
+}
+static void audio_failed(const sd_event_result_t *result, void *ctx) {
+    (void)ctx;
+    assert(result && !result->ready && result->event_id == s_pipeline.event_id);
+    ++failed_terminals;
 }
 static audio_pipeline_config_t config(void) {
     audio_pipeline_config_t result = audio_pipeline_default_config();
     result.event_open_cb = open_event;
+    result.event_end_cb = event_end;
+    result.audio_terminal_cb = audio_failed;
     return result;
 }
 static void assert_resources(bool retained) {
@@ -244,6 +270,12 @@ static void reset_case(void) {
     fail_capture_stop = fail_sd_mount = false;
     call_count = allocation_calls = free_calls = task_create_calls = task_delete_calls = 0;
     capture_init_calls = dsp_init_calls = 0;
+    event_opens = event_ends = recorder_ends = failed_terminals = 0;
+    saved_samples = last_end_sample = 0;
+    last_end_timestamp = 0;
+    accept_begin = accept_submit = accept_end = true;
+    last_producer_failed = false;
+    preroll_lag_samples = 0;
     memset(allocations, 0, sizeof(allocations));
     memset(&processing_task, 0, sizeof(processing_task));
 }
@@ -403,6 +435,89 @@ static void test_export_partial_suspend_can_restore(void) {
     assert(audio_pipeline_deinit() == ESP_OK);
     assert_resources(false);
 }
+static void test_five_minute_cap_and_vad_rearm(void) {
+    reset_case();
+    audio_pipeline_config_t cfg = config();
+    assert(audio_pipeline_init(&cfg) == ESP_OK);
+    const uint64_t start = 5000000000ULL; /* Exercise 64-bit capture indices. */
+    const int64_t timestamp = 7000000000LL;
+    const uint64_t end = start + (uint64_t)AUDIO_SAMPLE_RATE_HZ * 300;
+    assert(AUDIO_EVENT_MAX_DURATION_MS == 300000);
+    preroll_lag_samples = 160; /* Force the last 20 ms packet to need trimming. */
+    vad_service_on_afe_result(AUDIO_VAD_SPEECH, timestamp, start, 0, NULL);
+    assert(event_opens == 1 && s_pipeline.event_id == 1);
+    assert(s_pipeline.event_end_sample == end);
+    int16_t samples[AUDIO_FRAME_SAMPLES] = {0};
+    audio_frame_t raw = {.samples = samples, .sample_count = AUDIO_FRAME_SAMPLES,
+        .sample_rate = AUDIO_SAMPLE_RATE_HZ, .first_sample_index = start + preroll_lag_samples};
+    while (raw.first_sample_index < end) {
+        assert(event_ends == 0 && recorder_ends == 0);
+        record_event_frame(&raw);
+        /* Real VAD service must not manufacture another start on SPEECH. */
+        vad_service_on_afe_result(AUDIO_VAD_SPEECH, timestamp, raw.first_sample_index, 0, NULL);
+        raw.first_sample_index += AUDIO_FRAME_SAMPLES;
+    }
+    assert(event_ends == 1 && recorder_ends == 1 && !s_pipeline.event_id);
+    assert(last_end_sample == end && last_end_timestamp == timestamp + 300000000LL);
+    assert(saved_samples == (uint64_t)AUDIO_SAMPLE_RATE_HZ * 301); /* 1 s pre-roll. */
+    assert(!last_producer_failed && failed_terminals == 0 && s_pipeline.wait_for_silence);
+    record_event_frame(&raw);
+    vad_event(AUDIO_VAD_SPEECH, timestamp, end, NULL); /* Guard even a redundant callback. */
+    assert(event_opens == 1 && recorder_ends == 1);
+    vad_service_on_afe_result(AUDIO_VAD_SILENCE, timestamp + 301000000LL, end, 0, NULL);
+    assert(!s_pipeline.wait_for_silence && event_ends == 1);
+    vad_service_on_afe_result(AUDIO_VAD_SPEECH, timestamp + 302000000LL, end + 16000, 0, NULL);
+    assert(event_opens == 2 && s_pipeline.event_id == 2);
+    vad_service_on_afe_result(AUDIO_VAD_SILENCE, timestamp + 303000000LL, end + 32000, 0, NULL);
+    assert(event_ends == 2 && recorder_ends == 2);
+    assert(audio_pipeline_deinit() == ESP_OK);
+    assert_resources(false);
+}
+static void test_normal_end_before_limit(void) {
+    reset_case();
+    audio_pipeline_config_t cfg = config();
+    assert(audio_pipeline_init(&cfg) == ESP_OK);
+    vad_service_on_afe_result(AUDIO_VAD_SPEECH, 1000000, 16000, 0, NULL);
+    vad_service_on_afe_result(AUDIO_VAD_SILENCE, 2000000, 32000, 0, NULL);
+    assert(event_ends == 1 && recorder_ends == 1 && last_end_sample == 32000);
+    assert(last_end_timestamp == 2000000 && !s_pipeline.wait_for_silence);
+    assert(!last_producer_failed && failed_terminals == 0);
+    assert(audio_pipeline_deinit() == ESP_OK);
+    assert_resources(false);
+}
+static void test_limit_failure_paths(void) {
+    for (unsigned failure = 0; failure < 4; ++failure) {
+        reset_case();
+        audio_pipeline_config_t cfg = config();
+        assert(audio_pipeline_init(&cfg) == ESP_OK);
+        accept_begin = failure != 0;
+        accept_submit = failure != 1;
+        accept_end = failure != 2;
+        vad_service_on_afe_result(AUDIO_VAD_SPEECH, 0, 0, 0, NULL);
+        int16_t samples[AUDIO_FRAME_SAMPLES] = {0};
+        audio_frame_t raw = {.samples = samples, .sample_count = AUDIO_FRAME_SAMPLES,
+            .sample_rate = AUDIO_SAMPLE_RATE_HZ};
+        if (failure == 3) {
+            record_event_frame(&raw);
+            /* A gap crossing the cap is a failure even with no final PCM submitted. */
+            raw.first_sample_index = s_pipeline.event_end_sample + 1;
+            record_event_frame(&raw);
+        } else {
+            /* Keep input continuous to isolate each injected recorder failure. */
+            while (s_pipeline.event_id) {
+                record_event_frame(&raw);
+                raw.first_sample_index += AUDIO_FRAME_SAMPLES;
+            }
+        }
+        assert(event_ends == 1 && !s_pipeline.event_id && s_pipeline.wait_for_silence);
+        assert(failed_terminals == (failure == 0 || failure == 2 ? 1U : 0U));
+        assert(recorder_ends == (failure == 0 ? 0U : 1U));
+        if (failure == 1 || failure == 3) assert(last_producer_failed);
+        if (failure == 2) assert(!last_producer_failed);
+        assert(audio_pipeline_deinit() == ESP_OK);
+        assert_resources(false);
+    }
+}
 int main(void) {
     test_order_and_retained_restart();
     test_capture_init_failure_before_dsp();
@@ -413,6 +528,9 @@ int main(void) {
     test_sd_timeout_nonfatal_and_invalid_init();
     test_export_suspend_retains_storage_and_retries_resume();
     test_export_partial_suspend_can_restore();
-    puts("pipeline startup/lifecycle tests passed (9 cases)");
+    test_five_minute_cap_and_vad_rearm();
+    test_normal_end_before_limit();
+    test_limit_failure_paths();
+    puts("pipeline startup/lifecycle/duration tests passed (15 cases)");
     return 0;
 }

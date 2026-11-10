@@ -13,6 +13,7 @@ from .protocol import (
     EventAudioReady,
     EventComplete,
     EventOpen,
+    EventStatus,
     FaceBatchEnd,
     FaceStatus,
     MessageType,
@@ -81,9 +82,47 @@ class EventStore:
                 result_sent INTEGER NOT NULL DEFAULT 0,
                 PRIMARY KEY(event_id, image_id),
                 UNIQUE(boot_session, image_id),
-                UNIQUE(event_id, face_index)
+                UNIQUE(event_id, request_id, face_index)
             );
         """)
+        # Keep legacy Event columns as the latest batch summary. Historical
+        # requests and their results live in a separate normalized table.
+        self.connection.executescript("""
+            CREATE TABLE IF NOT EXISTS event_batches(
+                event_id TEXT NOT NULL REFERENCES events(event_id),
+                boot_session TEXT NOT NULL,
+                request_id INTEGER NOT NULL,
+                opened_at TEXT,
+                face_status INTEGER NOT NULL DEFAULT 0,
+                face_count INTEGER, completed_face_count INTEGER,
+                recognized_count INTEGER, unknown_count INTEGER, failed_count INTEGER,
+                face_terminal_received INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY(event_id, request_id)
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS batch_request_owner
+                ON event_batches(boot_session, request_id) WHERE request_id<>0;
+        """)
+        if self.connection.execute("PRAGMA user_version").fetchone()[0] < 2:
+            with self.connection:
+                self.connection.execute("""
+                    INSERT OR IGNORE INTO event_batches SELECT event_id,boot_session,
+                        coalesce(request_id,0),opened_at,face_status,face_count,completed_face_count,
+                        recognized_count,unknown_count,failed_count,face_terminal_received FROM events
+                """)
+                schema = self.connection.execute(
+                    "SELECT sql FROM sqlite_master WHERE name='event_faces'"
+                ).fetchone()[0]
+                if "UNIQUE(event_id, face_index)" in schema:
+                    self.connection.execute("ALTER TABLE event_faces RENAME TO event_faces_v1")
+                    self.connection.execute(
+                        schema.replace("event_faces", "event_faces_v2", 1).replace(
+                            "UNIQUE(event_id, face_index)", "UNIQUE(event_id, request_id, face_index)"
+                        )
+                    )
+                    self.connection.execute("INSERT INTO event_faces_v2 SELECT * FROM event_faces_v1")
+                    self.connection.execute("DROP TABLE event_faces_v1")
+                    self.connection.execute("ALTER TABLE event_faces_v2 RENAME TO event_faces")
+                self.connection.execute("PRAGMA user_version=2")
         self.connection.commit()
 
     def close(self) -> None:
@@ -107,7 +146,7 @@ class EventStore:
         return [
             dict(row)
             for row in self.connection.execute(
-                "SELECT * FROM event_faces WHERE event_id=? ORDER BY face_index", (key,)
+                "SELECT * FROM event_faces WHERE event_id=? ORDER BY rowid", (key,)
             )
         ]
 
@@ -115,12 +154,28 @@ class EventStore:
         if request_id == 0:
             return None
         row = self.connection.execute(
-            "SELECT event_id FROM events WHERE boot_session=? AND request_id=?",
-            (boot_session, request_id),
+            "SELECT event_id FROM event_batches WHERE boot_session=? AND request_id=? "
+            "UNION SELECT event_id FROM events WHERE boot_session=? AND request_id=?",
+            (boot_session, request_id, boot_session, request_id),
         ).fetchone()
         return str(row[0]) if row else None
 
-    def _ensure_event(self, event_id: int, request_id: int) -> dict[str, Any]:
+    def batches(self, event_id: int | str) -> list[dict[str, Any]]:
+        key = event_id_hex(event_id) if isinstance(event_id, int) else event_id
+        return [
+            dict(row)
+            for row in self.connection.execute(
+                "SELECT * FROM event_batches WHERE event_id=? ORDER BY rowid", (key,)
+            )
+        ]
+
+    def batch(self, event_id: int | str, request_id: int) -> dict[str, Any]:
+        for row in self.batches(event_id):
+            if row["request_id"] == request_id:
+                return row
+        raise ProtocolError("request does not belong to event batch")
+
+    def _ensure_event(self, event_id: int, request_id: int, *, new_batch: bool = False) -> dict[str, Any]:
         key = event_id_hex(event_id)
         if not 0 <= request_id <= 0xFFFFFFFF:
             raise ProtocolError("invalid request_id")
@@ -135,7 +190,8 @@ class EventStore:
             )
         else:
             current = row["request_id"]
-            if current is not None and request_id not in (0, current):
+            known = any(batch["request_id"] == request_id for batch in self.batches(key))
+            if current is not None and request_id not in (0, current) and not known and not new_batch:
                 raise ProtocolError("request_id disagrees with event ownership")
             if current is None and request_id:
                 if row["completed_at"] is not None:
@@ -150,13 +206,39 @@ class EventStore:
         # Decode local values too, so callers cannot bypass wire validation.
         value = EventOpen.decode(value.encode())
         with self.connection:
-            row = self._ensure_event(value.event_id, request_id)
+            row = self._ensure_event(value.event_id, request_id, new_batch=True)
             if row["trigger_type"] is not None:
-                if row["trigger_type"] != value.trigger_type or (row["request_id"] or 0) != request_id:
+                if row["trigger_type"] != value.trigger_type:
                     raise ProtocolError("conflicting duplicate EVENT_OPEN")
+            known = [batch for batch in self.batches(value.event_id) if batch["request_id"] == request_id]
+            if known and known[0]["opened_at"] is not None:
                 return
+            if not known:
+                if row["completed_at"] is not None or (
+                    row["audio_terminal_received"] and row["opened_at"] is not None
+                ):
+                    raise ProtocolError("stale new batch after audio/event terminal")
+                if any(not batch["face_terminal_received"] for batch in self.batches(value.event_id)):
+                    raise ProtocolError("previous face batch is still pending")
+                owner = self.event_for_request(request_id, row["boot_session"])
+                if owner is not None and owner != row["event_id"]:
+                    raise ProtocolError("request_id already belongs to another event")
+                self.connection.execute(
+                    "INSERT INTO event_batches(event_id,boot_session,request_id) VALUES(?,?,?)",
+                    (row["event_id"], row["boot_session"], request_id),
+                )
+                self.connection.execute(
+                    "UPDATE events SET request_id=?,face_status=0,face_terminal_received=0,"
+                    "face_count=NULL,completed_face_count=NULL,recognized_count=NULL,unknown_count=NULL,"
+                    "failed_count=NULL WHERE event_id=?",
+                    (request_id or None, row["event_id"]),
+                )
             self.connection.execute(
-                "UPDATE events SET trigger_type=?,opened_at=? WHERE event_id=?",
+                "UPDATE event_batches SET opened_at=? WHERE event_id=? AND request_id=?",
+                (_now(), row["event_id"], request_id),
+            )
+            self.connection.execute(
+                "UPDATE events SET trigger_type=?,opened_at=coalesce(opened_at,?) WHERE event_id=?",
                 (int(value.trigger_type), _now(), row["event_id"]),
             )
 
@@ -188,8 +270,15 @@ class EventStore:
             raise ProtocolError("FACE_BATCH_END request payload/header mismatch")
         with self.connection:
             row = self._ensure_event(value.event_id, request_id)
-            if (row["request_id"] or 0) != request_id:
+            batches = self.batches(value.event_id)
+            if not batches:  # A terminal may precede the first OPEN notification.
+                self.connection.execute(
+                    "INSERT INTO event_batches(event_id,boot_session,request_id) VALUES(?,?,?)",
+                    (row["event_id"], row["boot_session"], request_id),
+                )
+            if not any(batch["request_id"] == request_id for batch in self.batches(value.event_id)):
                 raise ProtocolError("face terminal request disagrees with event ownership")
+            batch = self.batch(value.event_id, request_id)
             columns = (
                 "face_count",
                 "completed_face_count",
@@ -206,21 +295,28 @@ class EventStore:
                 value.failed_count,
                 int(value.face_status),
             )
-            if row["face_terminal_received"]:
-                if tuple(row[column] for column in columns) != desired:
+            if batch["face_terminal_received"]:
+                if tuple(batch[column] for column in columns) != desired:
                     raise ProtocolError("conflicting duplicate face terminal")
                 return
             if row["completed_at"] is not None:
                 raise ProtocolError("stale face terminal")
-            faces = self.faces(row["event_id"])
+            faces = [face for face in self.faces(row["event_id"]) if face["request_id"] == request_id]
             if faces and any(face["face_count"] != value.expected_face_count for face in faces):
                 raise ProtocolError("terminal face_count disagrees with images")
             if len(faces) > value.expected_face_count:
                 raise ProtocolError("terminal face_count smaller than received images")
             self.connection.execute(
+                "UPDATE event_batches SET face_count=?,completed_face_count=?,recognized_count=?,"
+                "unknown_count=?,"
+                "failed_count=?,face_status=?,face_terminal_received=1 WHERE event_id=? AND request_id=?",
+                (*desired, row["event_id"], request_id),
+            )
+            self.connection.execute(
                 "UPDATE events SET face_count=?,completed_face_count=?,recognized_count=?,unknown_count=?,"
-                "failed_count=?,face_status=?,face_terminal_received=1 WHERE event_id=?",
-                (*desired, row["event_id"]),
+                "failed_count=?,face_status=?,face_terminal_received=1 WHERE event_id=? "
+                "AND coalesce(request_id,0)=?",
+                (*desired, row["event_id"], request_id),
             )
 
     def complete_event(self, value: EventComplete, request_id: int) -> None:
@@ -239,6 +335,14 @@ class EventStore:
                 return
             if not row["audio_terminal_received"] or not row["face_terminal_received"]:
                 raise ProtocolError("EVENT_COMPLETE before audio and face terminals")
+            if any(not batch["face_terminal_received"] for batch in self.batches(value.event_id)):
+                raise ProtocolError("EVENT_COMPLETE before all face batches ended")
+            if value.event_status is EventStatus.COMPLETE and any(
+                batch["failed_count"]
+                or batch["face_status"] not in (FaceStatus.COMPLETED, FaceStatus.NO_FACE)
+                for batch in self.batches(value.event_id)
+            ):
+                raise ProtocolError("successful completion disagrees with earlier batch errors")
             if (row["audio_status"], row["face_status"]) != (value.audio_status, value.face_status):
                 raise ProtocolError("completion disagrees with terminal branches")
             self.connection.execute(
@@ -277,15 +381,16 @@ class EventStore:
         self, *, event_id: int | str, request_id: int, image_id: int, face_index: int, face_count: int
     ) -> None:
         row = self.event(event_id)
-        if not request_id or row["request_id"] != request_id:
+        if not request_id or self.event_for_request(request_id, row["boot_session"]) != row["event_id"]:
             raise ProtocolError("face request does not belong to event")
         if row["opened_at"] is None:
             raise ProtocolError("face image arrived before EVENT_OPEN")
-        if row["completed_at"] is not None or row["face_terminal_received"]:
+        batch = self.batch(event_id, request_id)
+        if row["completed_at"] is not None or batch["face_terminal_received"]:
             raise ProtocolError("stale image for terminal face batch")
         if not 0 < image_id <= 0xFFFFFFFF or not 0 < face_count <= 0xFFFF or not 0 <= face_index < face_count:
             raise ProtocolError("invalid face identifiers or sequence")
-        faces = self.faces(row["event_id"])
+        faces = [face for face in self.faces(row["event_id"]) if face["request_id"] == request_id]
         if face_index != len(faces):
             raise ProtocolError("face_index is missing, duplicated, or out of order")
         if faces and faces[0]["face_count"] != face_count:
@@ -321,7 +426,7 @@ class EventStore:
         processing_time_ms: int,
     ) -> None:
         row = self.event(event_id)
-        if row["request_id"] != request_id:
+        if self.event_for_request(request_id, row["boot_session"]) != row["event_id"]:
             raise ProtocolError("recognition request does not belong to event")
         face = self.connection.execute(
             "SELECT * FROM event_faces WHERE event_id=? AND request_id=? AND image_id=?",
@@ -333,9 +438,9 @@ class EventStore:
             raise ProtocolError("duplicate recognition result")
         # A local disconnect may precede completion of a running recognizer;
         # retain its result, while the device's authoritative terminal stays fixed.
-        if row["completed_at"] is not None or row["face_terminal_received"]:
+        if row["completed_at"] is not None or self.batch(event_id, request_id)["face_terminal_received"]:
             raise ProtocolError("stale recognition for terminal event")
-        if status not in (StatusCode.OK, StatusCode.UNKNOWN, StatusCode.FAILED):
+        if status not in (StatusCode.OK, StatusCode.UNKNOWN, StatusCode.NO_FACE, StatusCode.FAILED):
             raise ProtocolError("invalid face recognition status")
         if not math.isfinite(similarity) or processing_time_ms < 0:
             raise ProtocolError("invalid recognition metrics")

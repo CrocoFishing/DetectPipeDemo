@@ -3,6 +3,10 @@
 #include "audio_types.h"
 #include "sd_recorder.h"
 #include "esp_err.h"
+
+/* Measured from the VAD trigger sample; saved pre-roll is additional. */
+#define AUDIO_EVENT_MAX_DURATION_MS 300000U
+
 #ifdef __cplusplus
 extern "C" {
 #endif

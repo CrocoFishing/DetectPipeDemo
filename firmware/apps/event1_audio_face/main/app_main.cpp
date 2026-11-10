@@ -21,7 +21,7 @@ extern "C" void app_main() {
     ESP_LOGI(tag, "CONFIG,camera_pwdn=%d,camera_reset=%d,camera_xclk=%d,camera_siod=%d,camera_sioc=%d,"
              "camera_d0=%d,camera_d1=%d,camera_d2=%d,camera_d3=%d,camera_d4=%d,camera_d5=%d,camera_d6=%d,camera_d7=%d,"
              "camera_vsync=%d,camera_href=%d,camera_pclk=%d,sd_profile=%s,ble=nimble,base_features=0x3f,"
-             "sr_model=vadnet1_medium,preroll_ms=1000,min_noise_ms=5000",
+             "sr_model=vadnet1_medium,vad_mode=0,preroll_ms=1000,min_noise_ms=1000",
              board::CAMERA_PWDN_GPIO, board::CAMERA_RESET_GPIO, board::CAMERA_XCLK_GPIO,
              board::CAMERA_SIOD_GPIO, board::CAMERA_SIOC_GPIO, board::CAMERA_D0_GPIO, board::CAMERA_D1_GPIO,
              board::CAMERA_D2_GPIO, board::CAMERA_D3_GPIO, board::CAMERA_D4_GPIO, board::CAMERA_D5_GPIO,
@@ -51,6 +51,6 @@ extern "C" void app_main() {
         return;
     }
     sd_export.enable();
-    ESP_LOGI(tag, "Event 1 running: one VAD utterance owns one RAW WAV and at most one face batch; Wi-Fi SD export=%s",
+    ESP_LOGI(tag, "Event 1 running: one RAW WAV per Event, face_interval_ms=30000,client_no_face_recaptures=3; Wi-Fi SD management=%s",
              export_error == ESP_OK ? "available" : "unavailable");
 }

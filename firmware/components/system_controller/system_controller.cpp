@@ -131,7 +131,7 @@ void SystemController::transition(SystemState s, const CaptureRequest& r, uint32
 
 void SystemController::finish_face_batch(const CaptureRequest& r, FaceBatchStatus status,
                                         uint16_t expected, uint16_t recognized,
-                                        uint16_t unknown, uint16_t failed) {
+                                        uint16_t unknown, uint16_t failed, bool client_no_face) {
     if (!r.has_event) return;
     FaceBatchResult result{};
     result.event_id = r.event_id; result.request_id = r.request_id;
@@ -139,6 +139,7 @@ void SystemController::finish_face_batch(const CaptureRequest& r, FaceBatchStatu
     result.completed_faces = recognized + unknown + failed;
     result.recognized_count = recognized; result.unknown_count = unknown; result.failed_count = failed;
     result.status = status;
+    result.client_no_face = client_no_face;
     ESP_LOGI(TAG, "FACE_BATCH_END,event_id=%016llX,request_id=%lu,expected=%u,completed=%u,status=%u",
              static_cast<unsigned long long>(r.event_id), static_cast<unsigned long>(r.request_id),
              static_cast<unsigned>(expected), static_cast<unsigned>(result.completed_faces),
@@ -252,6 +253,7 @@ void SystemController::pipeline_task() {
         uint16_t ok_count = 0, unknown_count = 0, failed_count = 0;
         uint32_t current_image = image;
         bool batch_failed = false;
+        bool client_no_face = false;
 
         for (uint16_t face_index = 0; face_index < face_count; ++face_index) {
             if (face_index) current_image = next_image_id_++;
@@ -312,6 +314,7 @@ void SystemController::pipeline_task() {
             if (result_status == static_cast<uint8_t>(protocol::StatusCode::Ok)) ++ok_count;
             else if (result_status == static_cast<uint8_t>(protocol::StatusCode::Unknown)) ++unknown_count;
             else ++failed_count;
+            client_no_face = client_no_face || result_status == static_cast<uint8_t>(protocol::StatusCode::NoFace);
             esp_task_wdt_reset();
         }
 
@@ -323,9 +326,15 @@ void SystemController::pipeline_task() {
                  static_cast<unsigned long>(failed_count));
         const FaceBatchStatus batch_status = failed_count == 0 ? FaceBatchStatus::Completed
             : (ok_count || unknown_count) ? FaceBatchStatus::Partial : FaceBatchStatus::Failed;
-        finish_face_batch(r, batch_status, face_count, ok_count, unknown_count, failed_count);
+        finish_face_batch(r, batch_status, face_count, ok_count, unknown_count, failed_count, client_no_face);
         transition(SystemState::Completed, r, current_image); transition(SystemState::Idle, r, current_image);
-        triggers_.complete(); board::set_status_led(false); board::log_memory("request_complete"); esp_task_wdt_reset();
+        triggers_.complete();
+        if (client_no_face && !r.has_event && r.client_recaptures < CLIENT_NO_FACE_MAX_RECAPTURES) {
+            uint32_t retry_request = 0;
+            if (triggers_.submit_recapture(r, retry_request) == SubmitResult::Accepted)
+                ble_.send_event(protocol::MessageType::CaptureAccepted, retry_request, 0);
+        }
+        board::set_status_led(false); board::log_memory("request_complete"); esp_task_wdt_reset();
     }
 }
 
@@ -351,7 +360,8 @@ bool SystemController::await_result(const CaptureRequest& r, uint32_t image,
         if (h.payload_length < 12) { error = protocol::ErrorCode::InvalidPacket; return false; }
         const uint8_t status = payload[0], person_id_len = payload[1], name_len = payload[2];
         if (status > static_cast<uint8_t>(protocol::StatusCode::Failed) || person_id_len > 32 || name_len > 64 ||
-            12U + person_id_len + name_len != h.payload_length) {
+            payload[3] || 12U + person_id_len + name_len != h.payload_length ||
+            (status == static_cast<uint8_t>(protocol::StatusCode::NoFace) && person_id_len)) {
             error = protocol::ErrorCode::InvalidPacket; return false;
         }
         char person_id[33]{}, name[65]{}; std::memcpy(person_id, payload + 12, std::min<size_t>(person_id_len, 32));

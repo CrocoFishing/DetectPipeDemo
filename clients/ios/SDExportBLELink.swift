@@ -8,6 +8,7 @@ public final class SDExportBLELink {
     public let peripheral: CBPeripheral
     public private(set) var latestStatus: SDExportStatus?
     public private(set) var ownedSessionID: UInt64 = 0
+    public private(set) var featureBits: UInt32 = 0
     private var startRequestID: UInt32?
     private var control: CBCharacteristic?
     private var event: CBCharacteristic?
@@ -33,6 +34,7 @@ public final class SDExportBLELink {
         try Task.checkCancellation()
         guard peripheral.state == .connected else { throw SDExportClientError.bleDisconnected }
         prepared = false
+        featureBits = 0
         control = nil; event = nil; information = nil; exportInformation = nil
         let service: CBService = try await wait(timeout: 10, install: { servicesWaiter = $0 }) {
             peripheral.discoverServices([BLEProtocol.serviceUUID])
@@ -53,6 +55,7 @@ public final class SDExportBLELink {
               features & BLEProtocol.wifiSDExportFeature != 0 else {
             throw SDExportClientError.unsupportedDevice
         }
+        featureBits = features
         if !event.isNotifying {
             let _: Void = try await wait(timeout: 10, install: { notifyWaiter = $0 }) {
                 peripheral.setNotifyValue(true, for: event)
@@ -102,6 +105,13 @@ public final class SDExportBLELink {
             try await Task.sleep(nanoseconds: 1_000_000_000)
         }
         throw SDExportClientError.bleTimeout
+    }
+
+    public func requireFileDeletion() async throws {
+        if !prepared { try await prepare() }
+        guard featureBits & BLEProtocol.sdFileDeleteFeature != 0 else {
+            throw SDExportClientError.unsupportedDevice
+        }
     }
 
     public func queryStatus(sessionID: UInt64 = 0) async throws -> SDExportStatus {
@@ -213,11 +223,13 @@ public final class SDExportBLELink {
     public func didModifyServices(_ services: [CBService]) {
         guard services.contains(where: { $0.uuid == BLEProtocol.serviceUUID }) else { return }
         prepared = false
+        featureBits = 0
         failPending(SDExportClientError.servicesChanged)
     }
 
     public func disconnected() {
         prepared = false
+        featureBits = 0
         failPending(SDExportClientError.bleDisconnected)
         // The HTTP snapshot remains valid until completion/cancel/lease expiry.
     }

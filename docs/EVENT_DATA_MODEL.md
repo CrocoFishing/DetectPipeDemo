@@ -1,6 +1,6 @@
 # Event 資料契約（iOS 匯入參考）
 
-本文件描述 `event1_audio_face` 實際寫入 SD 的 Event 資料。一次 VAD utterance 是一個 Event；每個 Event 擁有一條音訊分支，以及最多一個包含多張臉的相機 request。音訊與人臉可以先後以任意順序結束。
+本文件描述 `event1_audio_face` 實際寫入 SD 的 Event 資料。一次 VAD utterance 是一個 Event；每個 Event 擁有一條音訊分支，以及多輪包含多張臉的相機 request（開始時、每 30 秒，以及手機 NO_FACE 重拍）。音訊與人臉可以先後以任意順序結束。
 
 SD 原始 CSV/WAV 是持久資料契約；[BLE_PROTOCOL.md](BLE_PROTOCOL.md) 描述即時通知的二進位格式，[IOS_SD_EXPORT.md](IOS_SD_EXPORT.md) 描述完整下載。匯出 manifest 的 `format_version=1` 是下載清單版本；既有 CSV 以本文件列出的 header 識別欄位。Swift 參考型別位於 `clients/ios/EventDataTypes.swift`，CSV 匯入時先正確處理引號，再按欄名轉型。
 
@@ -48,7 +48,7 @@ event_id,audio_file,audio_source,sample_rate,channels,bits_per_sample,audio_firs
 | `bits_per_sample` | `UInt16`，16 | signed PCM16 little-endian。 |
 | `audio_first_sample` | `UInt64` | 實際存檔的第一個 sample，包含可取得的 pre-roll。 |
 | `vad_start_sample` | `UInt64` | VAD utterance 起點。 |
-| `vad_end_sample` | `UInt64` | VAD utterance 結束邊界。 |
+| `vad_end_sample` | `UInt64` | 自然 VAD_END 或觸發後 5 分鐘的強制結束邊界。 |
 | `audio_last_sample` | `UInt64` | 實際存檔末端的 **exclusive** sample 邊界。 |
 | `vad_start_timestamp_us` | `Int64` | VAD 起點的開機後微秒。 |
 | `vad_end_timestamp_us` | `Int64` | VAD 結束的開機後微秒。 |
@@ -69,18 +69,25 @@ sample index 在匯出暫停後保留，但停止擷取期間沒有新 samples�
 
 ## 人臉關聯與 batch 終態
 
+資料模型是 `Event -> audio（1）+ face_batches（多）-> faces（多）`。CSV 欄位不變，以 `(event_id, request_id)` 分組每輪，使用 `(event_id, request_id, face_index)` 驗證序列，不能再以 `(event_id, face_index)` 唯一化。一般影像仍以 `(boot_session, image_id)` 唯一。開始時與第 30、60、90 秒等時間點使用新 request；若相機／上一輪仍忙則略過，不補排。5 分鐘上限不再開新輪，pre-roll 另計。
+
+手機端 NO_FACE 表示該張有效 JPEG 中沒有偵測到人臉，不等於 UNKNOWN，也不同於 ESP 發出的 NO_FACE（整個 request 偵測不到臉）。此張以 CLIENT_NO_FACE 留存並計入 failed/completed；完成當輪其他人臉後，最多再進行 3 次完整拍照辨識，每次用新 request。先前成功結果仍保存，重拍不是同一個 face_index 的覆寫。這些 frame 之間沒有跨輪人物追蹤，不能把相同 face_index 視為相同人物。
+
+Swift 的 `SDStoredEvent` 持有 `faceBatches` 與全部 `faces`；PC `event_batches` 保存每輪 request/終態/計數，`events` 的舊 face 欄位是最後一輪摘要。既有資料庫會自動移轉唯一鍵並補上舊 batch。離線 inspector 輸出新增 `face_batches`，同時保留平面 `faces`。舊三個範例仍是單輪資料。
+
 `face_associations.csv` 的 header：
 
 ```csv
 event_id,request_id,image_id,face_index,face_count,status,person_id,similarity,processing_time_ms
 ```
 
-一般人臉列的型別：`event_id` 字串、`request_id/image_id/processing_time_ms` 為 `UInt32`、`face_index/face_count` 為 `UInt16`、`similarity` 為 `Float`、`person_id` 為 UTF-8 字串（最多 32 bytes）。`face_index` 從 0 開始且小於 `face_count`；臉按原始框面積由大到小，面積相同維持 detector 順序。`person_id` 是穩定身份鍵，顯示名稱沒有存入這份 CSV。
+一般人臉列的型別：`event_id` 字串、`request_id/image_id/processing_time_ms` 為 `UInt32`、`face_index/face_count` 為 `UInt16`、`similarity` 為 `Float`、`person_id` 為 UTF-8 字串（最多 32 bytes）。`face_index` 在每個 request 內從 0 開始且小於 `face_count`；臉按原始框面積由大到小，面積相同維持 detector 順序。`person_id` 是穩定身份鍵，顯示名稱沒有存入這份 CSV。
 
 | `status` | 意義 |
 |---|---|
 | `RECOGNIZED` | client 回傳已辨識結果。 |
-| `UNKNOWN` | client 完成辨識但沒有匹配身份；計入 completed。 |
+| `UNKNOWN` | client 完成辨識但沒有匹配身份；計入 completed，不重拍。 |
+| `CLIENT_NO_FACE` | 接收端在有效 JPEG 中找不到臉（wire status=2）；計入 failed/completed，觸發最多 3 次全批重拍。 |
 | `FAILED` | client 回傳辨識失敗；保留其他已完成的人臉。 |
 
 每個 batch 另外有一列 sentinel：
@@ -108,10 +115,11 @@ event_id,state,timestamp_us,status
 |---|---|---|
 | `OPEN` | `OK` | Event 已建立。 |
 | `AUDIO_READY` | `READY`／`FAILED` | 音訊分支終態；state 名稱即使失敗仍是 AUDIO_READY。 |
-| `FACE_BATCH_END` | 上述 batch 終態 | 人臉分支終態。 |
+| `FACE_BATCH_OPEN` | `OK`／`CLIENT_NO_FACE_RETRY` | 同一 Event 的後續 request 開始；初始輪使用 OPEN。 |
+| `FACE_BATCH_END` | 上述 batch 終態 | 該 request 終態；同一 Event 可有多列。 |
 | `COMPLETE` | `COMPLETE`／`COMPLETE_WITH_ERROR` | 兩條分支皆終態。 |
 
-OPEN 應最先出現，兩條分支終態順序不限，COMPLETE 在兩者之後。`COMPLETE` 需要 READY 音訊，以及 COMPLETED／NO_FACE 的人臉分支，且沒有失敗人臉。其他終態組合使用 `COMPLETE_WITH_ERROR`。
+OPEN、AUDIO_READY、COMPLETE 各一列；每個已接受 request 各有一個 FACE_BATCH_END 與 sentinel。OPEN 應最先出現，COMPLETE 在音訊與最後一輪終態之後。`COMPLETE` 需要 READY 音訊，以及 COMPLETED／NO_FACE 的人臉分支，且任何一輪都沒有失敗人臉／batch error，即使後續重拍成功也保留整體錯誤。其他終態組合使用 `COMPLETE_WITH_ERROR`。
 
 App 匯入時先按 Event ID 聚合，再驗證 lifecycle、音訊列、sentinel、一般人臉與 WAV；用 `(boot_session, request_id)`、`(boot_session, image_id)` 檢查 ownership。缺少必要列、CSV/WAV 不一致、遺失終態或斷電殘留，應保留可取得資料並顯示 App 推導的 `INCOMPLETE`／驗證錯誤。`INCOMPLETE` 不是 firmware 傳送的 Event status。重試下載是同一份檔案的替換／略過，不能把 CSV 全部再次 append 至 App database；可用 Event ID 與作用域內的 image ID 做匯入鍵。衝突的 ownership／重複終態應報錯，不採最後一列覆寫。
 

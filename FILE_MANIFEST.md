@@ -2,6 +2,16 @@
 
 Generated source and documentation files are grouped below. Generated ESP-IDF `build/`, managed-component caches, Python `.venv/`, and interpreter caches are intentionally excluded.
 
+## Recurring Events and SD management additions
+
+- `firmware/components/event_manager/` and `pipeline_core/include/event_types.hpp`: bounded periodic/retry admission and accumulated Event errors; `system_controller` and `trigger_service` execute fresh full-batch recaptures.
+- `firmware/components/wifi_sd_export/`: authenticated explicit single-file DELETE and deletion preconditions in the host-testable core.
+- `pc_client/src/pc_client/event_store.py`: `event_batches` history and lossless legacy schema migration; `face_engine.py` / `__main__.py`: distinct receiver NO_FACE signal.
+- `clients/ios/{BLEProtocol,SDExportBLELink,SDExportClient,EventDataTypes}.swift`: capability checks, NO_FACE helper, explicit delete API and multi-batch import model.
+- `pc_client/tests/test_no_face_signal.py`, expanded event-store/protocol tests, and `tests/event1/test_event_multibatch_contract.py`: receiver/migration/round-history regressions.
+- `tests/event1/event_ledger_test.cpp`, `tests/wifi_sd_export/core_test.cpp`: actual scheduling/retry/terminal and deletion precondition policies.
+- `results/EVENT_MULTIBATCH_VERIFICATION.md`: current host/build verification and remaining hardware/Xcode acceptance.
+
 ## Root
 
 - `.gitignore`

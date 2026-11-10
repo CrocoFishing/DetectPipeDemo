@@ -220,13 +220,13 @@ struct WifiSdExportService::State {
         if (!io_buffer) return ESP_ERR_NO_MEM;
         httpd_config_t http = HTTPD_DEFAULT_CONFIG();
         http.stack_size = 8192; http.max_open_sockets = 2;
-        http.max_uri_handlers = 4; http.max_uri_len = sd_export::MAX_PATH_BYTES * 3 + 128;
+        http.max_uri_handlers = 5; http.max_uri_len = sd_export::MAX_PATH_BYTES * 3 + 128;
         http.max_req_hdr_len = 1024; http.recv_wait_timeout = 2; http.send_wait_timeout = 2;
         http.lru_purge_enable = true;
         if ((error = httpd_start(&server, &http)) != ESP_OK) return error;
         struct Route { const char* uri; httpd_method_t method; };
         constexpr Route routes[] = {{"/v1/export/status", HTTP_GET}, {"/v1/export/manifest", HTTP_GET},
-            {"/v1/export/file", HTTP_GET}, {"/v1/export/complete", HTTP_POST}};
+            {"/v1/export/file", HTTP_GET}, {"/v1/export/file", HTTP_DELETE}, {"/v1/export/complete", HTTP_POST}};
         for (const auto& route : routes) {
             httpd_uri_t handler{};
             handler.uri = route.uri; handler.method = route.method;
@@ -346,7 +346,8 @@ struct WifiSdExportService::State {
         self.active_socket.store(httpd_req_to_sockfd(request));
         esp_err_t error = ESP_FAIL;
         if (self.authorize(request)) {
-            if (request->method == HTTP_POST) error = self.complete(request);
+            if (request->method == HTTP_DELETE) error = self.delete_file(request);
+            else if (request->method == HTTP_POST) error = self.complete(request);
             else if (std::strncmp(request->uri, "/v1/export/status", 17) == 0) error = self.http_status(request);
             else if (std::strncmp(request->uri, "/v1/export/manifest", 19) == 0) error = self.manifest(request);
             else error = self.file(request);
@@ -436,6 +437,7 @@ struct WifiSdExportService::State {
         return true;
     }
     esp_err_t manifest(httpd_req_t* request) {
+        manifest_ready = false;
         mark_transfer();
         httpd_resp_set_type(request, "application/x-ndjson; charset=utf-8");
         httpd_resp_set_hdr(request, "Cache-Control", "no-store");
@@ -451,19 +453,70 @@ struct WifiSdExportService::State {
             sd_export::json_string(digest) + "}\n")) return ESP_FAIL;
         return httpd_resp_send_chunk(request, nullptr, 0);
     }
-    esp_err_t file(httpd_req_t* request) {
+    bool file_path(httpd_req_t* request, std::string& relative) {
         size_t query_size = httpd_req_get_url_query_len(request);
         if (!query_size || query_size > sd_export::MAX_PATH_BYTES * 3 + 5)
-            return response(request, "400 Bad Request", "{\"error\":\"invalid_path\"}");
+            { response(request, "400 Bad Request", "{\"error\":\"invalid_path\"}"); return false; }
         std::string query(query_size + 1, '\0');
         if (httpd_req_get_url_query_str(request, query.data(), query.size()) != ESP_OK)
-            return response(request, "400 Bad Request", "{\"error\":\"invalid_path\"}");
+            { response(request, "400 Bad Request", "{\"error\":\"invalid_path\"}"); return false; }
         query.resize(query_size);
         if (query.compare(0, 5, "path=") != 0 || query.find('&') != std::string::npos)
-            return response(request, "400 Bad Request", "{\"error\":\"invalid_path\"}");
-        std::string relative;
+            { response(request, "400 Bad Request", "{\"error\":\"invalid_path\"}"); return false; }
         if (!sd_export::decode_path(std::string_view(query).substr(5), relative))
-            return response(request, "400 Bad Request", "{\"error\":\"invalid_path\"}");
+            { response(request, "400 Bad Request", "{\"error\":\"invalid_path\"}"); return false; }
+        return true;
+    }
+    esp_err_t delete_file(httpd_req_t* request) {
+        if (complete_requested.load() || receipt_accepted)
+            return response(request, "409 Conflict", "{\"error\":\"session_closing\"}");
+        if (request->content_len)
+            return response(request, "400 Bad Request", "{\"error\":\"unexpected_body\"}");
+        std::string relative;
+        if (!file_path(request, relative)) return ESP_OK;
+        const auto match = request_header(request, "If-Match", 128);
+        const std::string absolute = native_path(relative);
+        bool unlink_attempted = false;
+        const auto result = sd_export::delete_regular_file(relative, match, etag(relative), [&] {
+            FILINFO info{};
+            const auto stat = f_stat(absolute.c_str(), &info);
+            if (stat == FR_NO_FILE || stat == FR_NO_PATH) return sd_export::FileKind::Missing;
+            if (stat != FR_OK) return sd_export::FileKind::Error;
+            return (info.fattrib & AM_DIR) ? sd_export::FileKind::Directory : sd_export::FileKind::Regular;
+        }, [&] {
+            unlink_attempted = true;
+            return f_unlink(absolute.c_str()) == FR_OK;
+        });
+        // A failed unlink may have partially changed the filesystem too.
+        if (unlink_attempted) {
+            manifest_ready = false;
+            manifest_hash.clear(); file_count = total_bytes = 0;
+        }
+        using sd_export::DeleteResult;
+        switch (result) {
+            case DeleteResult::InvalidPath:
+                return response(request, "400 Bad Request", "{\"error\":\"invalid_path\"}");
+            case DeleteResult::MatchRequired:
+                return response(request, "428 Precondition Required", "{\"error\":\"if_match_required\"}");
+            case DeleteResult::MatchFailed:
+                return response(request, "412 Precondition Failed", "{\"error\":\"etag_mismatch\"}");
+            case DeleteResult::Missing:
+                return response(request, "404 Not Found", "{\"error\":\"not_file\"}");
+            case DeleteResult::NotFile:
+                return response(request, "409 Conflict", "{\"error\":\"not_file\"}");
+            case DeleteResult::IoError:
+                return response(request, "500 Internal Server Error", "{\"error\":\"sd_io\"}");
+            case DeleteResult::Deleted: break;
+        }
+        // All handlers run on the sole HTTP task while recording is suspended.
+        // Invalidate the old receipt: completion now requires a fresh manifest.
+        mark_transfer(); activity();
+        return response(request, "200 OK", "{\"deleted\":true,\"path\":" +
+            sd_export::json_string(relative) + ",\"manifest_invalidated\":true}");
+    }
+    esp_err_t file(httpd_req_t* request) {
+        std::string relative;
+        if (!file_path(request, relative)) return ESP_OK;
         const std::string absolute = native_path(relative);
         FILINFO info{};
         FRESULT stat_result = f_stat(absolute.c_str(), &info);

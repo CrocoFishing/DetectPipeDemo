@@ -17,6 +17,14 @@
     ],
     "audio": null,
     "faces": [],
+    "face_batches": [
+      {
+        "request_id": 2147483651,
+        "faces": [],
+        "status": "DISCONNECTED",
+        "expected_face_count": 3
+      }
+    ],
     "request_id": 2147483651,
     "batch_terminal_status": "DISCONNECTED",
     "face_status": "DISCONNECTED",

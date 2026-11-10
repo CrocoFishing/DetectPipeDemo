@@ -3,6 +3,24 @@ import CryptoKit
 @testable import EventPipeSDExport
 
 final class SDExportContractTests: XCTestCase {
+    func testReceiverNoFaceHasDistinctWireStatusAndOwnership() throws {
+        let packet = try Packet.decode(RecognitionResult.noFace(requestID: 21, imageID: 22,
+                                                                processingTimeMs: 23).encodedPacket())
+        XCTAssertEqual(packet.header.messageType, .recognitionResult)
+        XCTAssertEqual(packet.header.requestID, 21)
+        XCTAssertEqual(packet.header.imageID, 22)
+        XCTAssertEqual(packet.payload[0], 2)
+        XCTAssertEqual(packet.payload[1], 0)
+        XCTAssertTrue(packet.payload[4..<8].allSatisfy { $0 == 0 })
+        XCTAssertEqual(Array(packet.payload[8..<12]), [23, 0, 0, 0])
+    }
+
+    func testPriorBatchErrorWithSuccessfulLatestBatchDecodes() throws {
+        var data = Data([1, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1])
+        data.append(contentsOf: [0, 0, 0, 0, 0])
+        let packet = Packet(header: PacketHeader(messageType: .eventComplete, requestID: 21), payload: data)
+        _ = try EventPayload.decode(packet)
+    }
     private let session = "0000000000000001"
     private let emptySHA = SDExportManifestParser.hex(SHA256.hash(data: Data()))
 

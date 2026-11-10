@@ -83,6 +83,7 @@ typedef struct { int token; } esp_afe_sr_data_t;
 #define AFE_MODE_HIGH_PERF 1
 #define AFE_NS_MODE_WEBRTC 1
 #define AFE_AGC_MODE_WEBRTC 1
+#define VAD_MODE_0 0
 #define VAD_MODE_1 1
 #define VAD_SPEECH 1
 #define AFE_VAD_ENERGY_THRESHOLD_DEFAULT (-60.0f)

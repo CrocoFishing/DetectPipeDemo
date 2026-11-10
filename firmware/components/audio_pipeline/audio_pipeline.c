@@ -42,6 +42,10 @@ typedef struct {
     uint64_t event_id;
     bool event_queued;
     bool event_failed;
+    bool wait_for_silence;
+    uint64_t event_end_sample;
+    int64_t event_end_timestamp_us;
+    uint64_t event_next_sample;
     sd_event_result_t failed_result;
     uint64_t latest_raw_end;
 } pipeline_state_t;
@@ -130,7 +134,12 @@ static void vad_event(audio_vad_state_t state, int64_t timestamp_us,
                       uint64_t sample_index, void *ctx)
 {
     (void)ctx;
-    if (state != AUDIO_VAD_SPEECH) { end_event(timestamp_us, sample_index); return; }
+    if (state != AUDIO_VAD_SPEECH) {
+        s_pipeline.wait_for_silence = false;
+        end_event(timestamp_us, sample_index);
+        return;
+    }
+    if (s_pipeline.wait_for_silence) return;
     if (s_pipeline.event_id) end_event(timestamp_us, sample_index);
     uint64_t id = s_pipeline.config.event_open_cb ?
         s_pipeline.config.event_open_cb(timestamp_us, sample_index, s_pipeline.config.callback_ctx) : 0;
@@ -140,9 +149,13 @@ static void vad_event(audio_vad_state_t state, int64_t timestamp_us,
     }
     s_pipeline.event_id = id;
     s_pipeline.event_failed = false;
+    s_pipeline.event_end_sample = sample_index +
+        ((uint64_t)AUDIO_EVENT_MAX_DURATION_MS * AUDIO_SAMPLE_RATE_HZ) / 1000U;
+    s_pipeline.event_end_timestamp_us = timestamp_us + (int64_t)AUDIO_EVENT_MAX_DURATION_MS * 1000;
     audio_preroll_metadata_t metadata = {0};
     size_t copied = audio_ring_buffer_copy_event_start(sample_index, s_pipeline.preroll_copy,
                                                      s_pipeline.preroll_capacity, &metadata);
+    s_pipeline.event_next_sample = metadata.saved_first_sample + copied;
     audio_frame_t start = {
         .samples = s_pipeline.preroll_copy, .sample_count = copied,
         .sample_rate = AUDIO_SAMPLE_RATE_HZ, .first_sample_index = metadata.saved_first_sample,
@@ -178,6 +191,31 @@ static void vad_event(audio_vad_state_t state, int64_t timestamp_us,
            id, sample_index, metadata.saved_first_sample, metadata.requested_preroll_ms,
            metadata.actual_preroll_ms, (unsigned)copied, metadata.wrap_count, metadata.overrun_count);
 }
+static void record_event_frame(const audio_frame_t *raw)
+{
+    if (!s_pipeline.event_id) return;
+    /* The RAW clock advances even when VAD remains SPEECH or AFE output stalls.
+     * Trim the boundary frame so AFE lag cannot extend recording past the cap.
+     */
+    audio_frame_t saved = *raw;
+    const uint64_t end = s_pipeline.event_end_sample;
+    if (saved.first_sample_index >= end) saved.sample_count = 0;
+    else if (saved.sample_count > end - saved.first_sample_index)
+        saved.sample_count = (size_t)(end - saved.first_sample_index);
+    if (raw->first_sample_index != s_pipeline.event_next_sample) s_pipeline.event_failed = true;
+    if (saved.sample_count && s_pipeline.event_queued &&
+        !sd_recorder_event_submit(s_pipeline.event_id, &saved)) s_pipeline.event_failed = true;
+    s_pipeline.event_next_sample = saved.first_sample_index + saved.sample_count;
+    if (raw->first_sample_index + raw->sample_count >= end) {
+        printf("EVENT,audio_end,event_id,%016" PRIX64 ",reason,max_duration,limit_ms,%u,sample,%" PRIu64 "\n",
+               s_pipeline.event_id, (unsigned)AUDIO_EVENT_MAX_DURATION_MS, end);
+        /* Keep the real VAD state. A new Event requires SILENCE then SPEECH;
+         * resetting VAD here would repeatedly trigger on the same background.
+         */
+        s_pipeline.wait_for_silence = true;
+        end_event(s_pipeline.event_end_timestamp_us, end);
+    }
+}
 static void pipeline_task(void *arg)
 {
     (void)arg;
@@ -191,8 +229,7 @@ static void pipeline_task(void *arg)
                 .sample_rate = AUDIO_SAMPLE_RATE_HZ, .first_sample_index = packet.first_sample_index,
                 .timestamp_us = packet.timestamp_us};
             s_pipeline.latest_raw_end = raw.first_sample_index + raw.sample_count;
-            if (s_pipeline.event_id && s_pipeline.event_queued &&
-                !sd_recorder_event_submit(s_pipeline.event_id, &raw)) s_pipeline.event_failed = true;
+            record_event_frame(&raw);
             audio_ring_buffer_push(&raw);
             audio_metrics_process_raw(&raw);
             esp_err_t error = audio_dsp_process(&raw);
@@ -226,8 +263,9 @@ esp_err_t audio_pipeline_init(const audio_pipeline_config_t *config)
     esp_err_t ret = ESP_OK;
     s_pipeline.config = *config;
     printf("CONFIG,audio,sample_rate,16000,channels,1,bits,16,event_source,RAW,"
-           "preroll_ms,%" PRIu32 ",dsp,%s,vad,%d,continuous,0,usb,0\n",
-           config->preroll_ms, audio_dsp_mode_name(config->dsp.mode), config->vad_enabled);
+           "preroll_ms,%" PRIu32 ",max_event_ms,%u,dsp,%s,vad,%d,continuous,0,usb,0\n",
+           config->preroll_ms, (unsigned)AUDIO_EVENT_MAX_DURATION_MS,
+           audio_dsp_mode_name(config->dsp.mode), config->vad_enabled);
     const size_t queue_bytes = PIPELINE_QUEUE_DEPTH * sizeof(pipeline_packet_t);
     /* Capture submits from its task, so only queue control needs internal RAM. */
     bool queue_in_psram = true;

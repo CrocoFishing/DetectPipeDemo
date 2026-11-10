@@ -1,5 +1,11 @@
 # Architecture Decision Records
 
+## Recurring Event recognition and explicit SD deletion (2026-11-11)
+
+Accepted. One Event retains one WAV and many face requests. Initial/every-30-second requests and receiver-NO_FACE retries use fresh request/image IDs; face indices restart per request. Busy periodic slots are skipped, never accumulated. Each round permits three receiver-triggered full-frame retries; UNKNOWN and generic FAILED do not retry. All attempt history remains durable and any failed batch keeps the final Event in COMPLETE_WITH_ERROR even if a retry succeeds. Ended Events and export gating stop new Event batches; in-flight work drains.
+
+Accepted. File deletion is explicit, one regular file per HTTP DELETE inside an authenticated, recording-paused SD session. Paths and current-session ETags are validated, directories are refused, and successful deletion invalidates prior manifests/receipts. Export acknowledgement never implies deletion. No Event-wide CSV rewriting or card erase is added.
+
 ## ADR-001: NimBLE
 
 Accepted. ESP-IDF 6.0 NimBLE compiled successfully and has lower memory cost than Bluedroid for a BLE-only peripheral. No compatibility reason required Bluedroid. GATT and connection handling therefore use NimBLE exclusively.

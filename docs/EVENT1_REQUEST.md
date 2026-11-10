@@ -1,5 +1,7 @@
 # EventPipeDemo — Event 1 整合計畫
 
+> 本文件保留原始整合需求作為歷史紀錄。2026-11-11 後「一個 Event 最多一個 request」已由多輪辨識取代，另加入 5 分鐘音訊上限、每 30 秒辨識、手機 NO_FACE 最多重拍 3 次及明確單檔刪除。現行實作契約以 [EVENT1.md](EVENT1.md)、[EVENT_DATA_MODEL.md](EVENT_DATA_MODEL.md)、[BLE_PROTOCOL.md](BLE_PROTOCOL.md) 為準。
+
 ## 1. 目標
 
 整合以下兩個既有系統：

@@ -26,6 +26,99 @@ def event(sequence: int, boot: int = 37) -> int:
     return (boot << 32) | sequence
 
 
+def test_multiple_batches_keep_all_attempts_and_allow_face_index_restart(tmp_path: Path) -> None:
+    with EventStore(tmp_path / "events.db") as store:
+        eid = event(1)
+        for request, status in ((10, StatusCode.OK), (11, StatusCode.NO_FACE), (12, StatusCode.UNKNOWN)):
+            store.open_event(EventOpen(eid), request)
+            face(store, eid, request, request, status=status)
+            batch_status = FaceStatus.FAILED if status is StatusCode.NO_FACE else FaceStatus.COMPLETED
+            store.face_batch_end(
+                FaceBatchEnd(
+                    eid,
+                    request,
+                    1,
+                    1,
+                    int(status is StatusCode.OK),
+                    int(status is StatusCode.UNKNOWN),
+                    int(status is StatusCode.NO_FACE),
+                    batch_status,
+                ),
+                request,
+            )
+        store.audio_ready(EventAudioReady(eid, AudioStatus.READY, 0, 4800000), 12)
+        store.complete_event(
+            EventComplete(eid, EventStatus.COMPLETE_WITH_ERROR, AudioStatus.READY, FaceStatus.COMPLETED), 12
+        )
+        assert [row["request_id"] for row in store.batches(eid)] == [10, 11, 12]
+        assert [row["face_index"] for row in store.faces(eid)] == [0, 0, 0]
+        assert [row["recognition_status"] for row in store.faces(eid)] == [0, 2, 1]
+        store.open_event(EventOpen(eid), 10)  # Late exact duplicate cannot regress the latest batch.
+        assert store.event(eid)["request_id"] == 12
+
+
+def test_new_batches_require_previous_terminal_and_stop_after_audio(tmp_path: Path) -> None:
+    with EventStore(tmp_path / "events.db") as store:
+        eid = event(1)
+        store.open_event(EventOpen(eid), 10)
+        with pytest.raises(ProtocolError, match="pending"):
+            store.open_event(EventOpen(eid), 11)
+        store.face_batch_end(FaceBatchEnd(eid, 10, 0, 0, 0, 0, 0, FaceStatus.NO_FACE), 10)
+        store.open_event(EventOpen(eid), 11)
+        with pytest.raises(ProtocolError, match="another event"):
+            store.open_event(EventOpen(event(2)), 10)
+        store.face_batch_end(FaceBatchEnd(eid, 10, 0, 0, 0, 0, 0, FaceStatus.NO_FACE), 10)
+        assert store.event(eid)["face_status"] == FaceStatus.PENDING
+        store.audio_ready(EventAudioReady(eid, AudioStatus.READY, 0, 1), 11)
+        with pytest.raises(ProtocolError, match="stale"):
+            store.open_event(EventOpen(eid), 12)
+        with pytest.raises(ProtocolError, match="before audio"):
+            store.complete_event(
+                EventComplete(eid, EventStatus.COMPLETE, AudioStatus.READY, FaceStatus.NO_FACE), 11
+            )
+
+
+def test_audio_shell_before_first_open_keeps_request_ownership(tmp_path: Path) -> None:
+    with EventStore(tmp_path / "events.db") as store:
+        eid = event(1)
+        store.audio_ready(EventAudioReady(eid, AudioStatus.READY, 0, 1), 10)
+        with pytest.raises(ProtocolError, match="another event"):
+            store.open_event(EventOpen(event(2)), 10)
+        store.open_event(EventOpen(eid), 10)
+        store.face_batch_end(FaceBatchEnd(eid, 10, 0, 0, 0, 0, 0, FaceStatus.NO_FACE), 10)
+        store.complete_event(
+            EventComplete(eid, EventStatus.COMPLETE, AudioStatus.READY, FaceStatus.NO_FACE), 10
+        )
+        assert store.event(eid)["completed_at"] is not None
+
+
+def test_legacy_store_migration_retains_faces_and_opens_next_batch(tmp_path: Path) -> None:
+    import sqlite3
+
+    path = tmp_path / "events.db"
+    eid = event(1)
+    with EventStore(path) as store:
+        store.open_event(EventOpen(eid), 10)
+        face(store, eid, 10, 1)
+        store.face_batch_end(FaceBatchEnd(eid, 10, 1, 1, 0, 1, 0, FaceStatus.COMPLETED), 10)
+    with sqlite3.connect(path) as connection:
+        schema = connection.execute("SELECT sql FROM sqlite_master WHERE name='event_faces'").fetchone()[0]
+        connection.execute("ALTER TABLE event_faces RENAME TO current_faces")
+        connection.execute(
+            schema.replace("UNIQUE(event_id, request_id, face_index)", "UNIQUE(event_id, face_index)")
+        )
+        connection.execute("INSERT INTO event_faces SELECT * FROM current_faces")
+        connection.execute("DROP TABLE current_faces")
+        connection.execute("DROP TABLE event_batches")
+        connection.execute("PRAGMA user_version=1")
+    with EventStore(path) as store:
+        assert len(store.faces(eid)) == 1
+        assert store.batches(eid)[0]["face_terminal_received"] == 1
+        store.open_event(EventOpen(eid), 11)
+        face(store, eid, 11, 2)
+        assert [row["face_index"] for row in store.faces(eid)] == [0, 0]
+
+
 def packet(kind: MessageType, request: int, value: object) -> bytes:
     return make_packet(kind, request_id=request, payload=value.encode())  # type: ignore[attr-defined]
 
@@ -238,6 +331,60 @@ class FakeClient:
 
     async def write_gatt_char(self, _: str, data: bytes, response: bool) -> None:
         self.writes.append(data)
+
+
+def test_session_routes_multiple_requests_and_receiver_no_face(tmp_path: Path) -> None:
+    received = []
+    with EventStore(tmp_path / "events.db") as store:
+        session = BleFaceSession("test", received.append, event_store=store)
+        session.client = FakeClient()
+        eid = event(1)
+        for request, status in ((10, StatusCode.NO_FACE), (11, StatusCode.UNKNOWN)):
+            session._notification(None, bytearray(packet(MessageType.EVENT_OPEN, request, EventOpen(eid))))
+            begin, chunks, end = make_image_packets(b"jpeg", request, request, 2, face_index=0, face_count=1)
+            for value in (begin, *chunks, end):
+                session._notification(None, bytearray(value.encode()))
+            image = received[-1]
+            assert image.event_id == "0000002500000001"
+            asyncio.run(
+                session.send_recognition_result(
+                    request, request, status, "", status.name, 0.0, 1, event_id=image.event_id
+                )
+            )
+            assert session.complete_face(image, status) is not None
+            failed = int(status is StatusCode.NO_FACE)
+            batch = FaceBatchEnd(
+                eid,
+                request,
+                1,
+                1,
+                0,
+                1 - failed,
+                failed,
+                FaceStatus.FAILED if failed else FaceStatus.COMPLETED,
+            )
+            session._notification(None, bytearray(packet(MessageType.FACE_BATCH_END, request, batch)))
+        session._notification(
+            None,
+            bytearray(
+                packet(MessageType.EVENT_AUDIO_READY, 11, EventAudioReady(eid, AudioStatus.READY, 0, 1))
+            ),
+        )
+        session._notification(
+            None,
+            bytearray(
+                packet(
+                    MessageType.EVENT_COMPLETE,
+                    11,
+                    EventComplete(
+                        eid, EventStatus.COMPLETE_WITH_ERROR, AudioStatus.READY, FaceStatus.COMPLETED
+                    ),
+                )
+            ),
+        )
+        assert len(store.batches(eid)) == 2 and len(store.faces(eid)) == 2
+        assert session._event_requests == {}
+        assert decode_packet(session.client.writes[0]).payload[0] == StatusCode.NO_FACE
 
 
 def test_session_routes_existing_image_protocol_and_keeps_result_on_disconnect(tmp_path: Path) -> None:

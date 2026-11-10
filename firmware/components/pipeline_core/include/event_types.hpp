@@ -3,6 +3,9 @@
 #include <cstdint>
 
 namespace demo {
+inline constexpr int64_t EVENT_FACE_INTERVAL_US = 30'000'000;
+inline constexpr int64_t EVENT_MAX_DURATION_US = 300'000'000;
+inline constexpr uint8_t CLIENT_NO_FACE_MAX_RECAPTURES = 3;
 enum class AudioStatus : uint8_t { Pending = 0, Ready = 1, Failed = 2 };
 enum class FaceBatchStatus : uint8_t {
     Pending = 0, Completed = 1, NoFace = 2, Partial = 3,
@@ -16,6 +19,7 @@ struct FaceBatchResult {
     uint16_t expected_faces{0}, completed_faces{0};
     uint16_t recognized_count{0}, unknown_count{0}, failed_count{0};
     FaceBatchStatus status{FaceBatchStatus::Pending};
+    bool client_no_face{false};
 };
 struct FaceAssociation {
     uint64_t event_id{0};
@@ -37,11 +41,31 @@ struct EventContext {
     FaceBatchStatus face_status{FaceBatchStatus::Pending};
     EventState state{EventState::Open};
     bool vad_ended{false};
+    int64_t next_face_timestamp_us{0};
+    uint16_t face_batch_count{0};
+    uint8_t face_retry_count{0};
+    bool face_had_error{false};
+    bool face_retry_pending{false};
 };
 inline const char* audio_status_name(AudioStatus s) {
     switch (s) { case AudioStatus::Pending: return "PENDING";
         case AudioStatus::Ready: return "READY"; case AudioStatus::Failed: return "FAILED"; }
     return "FAILED";
+}
+inline bool face_slot_due(EventContext& c, int64_t now) {
+    if (c.vad_ended || now >= c.vad_start_timestamp_us + EVENT_MAX_DURATION_US ||
+        now < c.next_face_timestamp_us) return false;
+    do { c.next_face_timestamp_us += EVENT_FACE_INTERVAL_US; }
+    while (c.next_face_timestamp_us <= now);
+    return true; // A busy camera skips this slot; never accumulate a backlog.
+}
+inline void begin_face_batch(EventContext& c, uint32_t request_id, bool retry) {
+    c.request_id = request_id;
+    c.face_status = FaceBatchStatus::Pending;
+    c.expected_face_count = c.completed_face_count = 0;
+    c.face_retry_pending = false;
+    c.face_retry_count = retry ? c.face_retry_count + 1 : 0;
+    ++c.face_batch_count;
 }
 inline const char* face_status_name(FaceBatchStatus s) {
     switch (s) { case FaceBatchStatus::Pending: return "PENDING";
@@ -53,8 +77,9 @@ inline const char* face_status_name(FaceBatchStatus s) {
 }
 // Terminal failure preserves the other branch. UNKNOWN is included in completed_faces.
 inline bool refresh_event_state(EventContext& c, uint16_t failed_faces = 0) {
-    if (c.audio_status == AudioStatus::Pending || c.face_status == FaceBatchStatus::Pending) return false;
-    const bool ok = c.audio_status == AudioStatus::Ready && failed_faces == 0 &&
+    if (!c.vad_ended || c.audio_status == AudioStatus::Pending ||
+        c.face_status == FaceBatchStatus::Pending) return false;
+    const bool ok = c.audio_status == AudioStatus::Ready && !c.face_had_error && failed_faces == 0 &&
         (c.face_status == FaceBatchStatus::Completed || c.face_status == FaceBatchStatus::NoFace);
     c.state = ok ? EventState::Complete : EventState::CompleteWithError;
     return true;
@@ -91,6 +116,10 @@ inline bool apply_face_terminal(EventContext& c, const FaceBatchResult& result) 
     c.expected_face_count = result.expected_faces;
     c.completed_face_count = result.completed_faces;
     c.face_status = result.status;
+    c.face_retry_pending = result.client_no_face && !c.vad_ended &&
+        c.face_retry_count < CLIENT_NO_FACE_MAX_RECAPTURES;
+    c.face_had_error = c.face_had_error || result.failed_count != 0 ||
+        (result.status != FaceBatchStatus::Completed && result.status != FaceBatchStatus::NoFace);
     refresh_event_state(c, result.failed_count);
     return true;
 }

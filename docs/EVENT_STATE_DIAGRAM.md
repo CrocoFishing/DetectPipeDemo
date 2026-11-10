@@ -1,6 +1,6 @@
 # Event 1 State Diagram
 
-本文件依目前 `event1_audio_face`、`EventManager`、audio recorder、camera pipeline 與 PC `EventStore` 的實作繪製。**一次 VAD utterance = 一個 Event**；同一個 `event_id` 擁有一條 audio 分支，以及最多一個包含 N 張臉的 camera request。兩條分支非同步執行，終態可以以任意順序到達。
+本文件依目前 `event1_audio_face`、`EventManager`、audio recorder、camera pipeline 與 PC `EventStore` 的實作繪製。**一次 VAD utterance = 一個 Event**；同一個 `event_id` 擁有一條 audio 分支，以及多個包含 N 張臉的 camera request（開始、每 30 秒及 NO_FACE 重拍）。兩條分支非同步執行，終態可以以任意順序到達。
 
 圖中的 `OPEN / WAITING / COMPLETE / COMPLETE_WITH_ERROR` 是實際 `EventState`；audio 的 `PENDING / READY / FAILED` 和 face batch 的狀態則分別保存在 `AudioStatus`、`FaceBatchStatus`。其餘中文節點是操作步驟或判斷，用來展開流程，不是新增的 firmware enum。
 
@@ -27,7 +27,9 @@ stateDiagram-v2
     OPEN: 快照 RAW pre-roll / 啟動兩條分支
     OPEN --> OPEN: 收到一個分支終態 / 另一分支仍 PENDING
     OPEN --> WAITING: VAD_END / 保存結束 sample 與 timestamp
-    OPEN --> FinishCheck: audio 與 face 都已 terminal
+    OPEN --> WAITING: 觸發後滿 300000 ms / 保存上限 sample 與 timestamp
+    OPEN --> OPEN: 每 30 秒且相機可用 / 新 request / 同一 WAV
+    OPEN --> OPEN: client NO_FACE / 最多重拍 3 次 / 保留所有結果
 
     WAITING: VAD 已結束 / 等待尚未完成的分支
     WAITING --> WAITING: 收到一個分支終態 / 另一分支仍 PENDING
@@ -53,7 +55,9 @@ stateDiagram-v2
     end note
 ```
 
-正常 audio terminal 在 VAD_END 後到達，因此通常經過 `WAITING`。`refresh_event_state()` 的實際完成條件只檢查兩個分支終態，未另外要求 `vad_ended`；上圖保留 `OPEN` 直接進入完成判斷的轉移。`WAITING` 是 utterance 已結束的意思，不代表已有任一分支完成。
+正常 audio terminal 在 VAD_END 後到達，因此經過 `WAITING`。`refresh_event_state()` 現在要求 `vad_ended`、audio terminal 及最後一輪 face terminal；錄音中的任何單輪結束不會完成 Event。`WAITING` 是 utterance 已結束的意思，不代表已有任一分支完成。
+
+Audio 最長為 VAD 觸發後 5 分鐘，pre-roll 另計。到上限時由 RAW sample clock 觸發既有 end callback 與 recorder END，最後一個 frame 會裁切至上限，不因正常到上限而標記失敗。此時保存的 `vad_end_sample`／timestamp 表示強制結束邊界；log 以 `reason,max_duration` 區分。收尾後等待 VAD 回到非語音，再收到下一次語音轉換才可建立新 Event，不重設 VAD、不立即續開。
 
 啟動前，app 必須成功初始化 NVS boot counter、EventManager 與 audio pipeline 才能接收 VAD Event。NVS 初始化／commit／counter overflow、EventManager task 或 audio init/start 失敗會停止 Event 啟動；camera/BLE init/start 失敗則允許 audio 繼續，每個 Event 的 face 分支直接回報 `FAILED`。
 
@@ -74,9 +78,10 @@ stateDiagram-v2
     BothPending --> AudioFirst: EVENT_AUDIO_READY / READY 或 FAILED
     BothPending --> FaceFirst: FACE_BATCH_END / 任一 face 終態
     AudioFirst --> BothTerminal: FACE_BATCH_END
+    FaceFirst --> BothPending: 錄音中且新週期／NO_FACE 重拍 / 新 request
     FaceFirst --> BothTerminal: EVENT_AUDIO_READY
-    BothTerminal --> Outcome: refresh_event_state
-    Outcome --> COMPLETE: audio READY 且 face 成功且 failed_count = 0
+    BothTerminal --> Outcome: vad_ended 且 refresh_event_state
+    Outcome --> COMPLETE: audio READY 且所有輪次成功且無歷史錯誤
     Outcome --> COMPLETE_WITH_ERROR: 任一分支失敗
     COMPLETE --> [*]
     COMPLETE_WITH_ERROR --> [*]
@@ -88,7 +93,7 @@ stateDiagram-v2
 | Face batch | `PENDING` | `COMPLETED`、`NO_FACE`、`PARTIAL`、`BUSY`、`TIMEOUT`、`DISCONNECTED`、`FAILED` | 任一終態仍需等待 audio terminal |
 | Event | `OPEN`、`WAITING` | `COMPLETE`、`COMPLETE_WITH_ERROR` | 發布完成資訊後才釋放 Event slot |
 
-`UNKNOWN` 是有效且已完成的單臉 recognition result，不會單獨造成 Event error。`NO_FACE` 也是成功的 batch 終態；audio 為 `READY` 時可得到 `COMPLETE`。單臉 `FAILED` 也計入 `completed_faces`，但會使 batch／Event 帶有錯誤。
+`UNKNOWN` 是有效且已完成的單臉 recognition result，不會單獨造成 Event error。`NO_FACE` 是 ESP 未偵測到臉的成功 batch 終態；所有輪次皆成功且 audio 為 `READY` 時可得到 `COMPLETE`。手機回覆的單臉 CLIENT_NO_FACE 則計入 failed 並觸發有限重拍。單臉 `FAILED` 也計入 `completed_faces`，但會使 batch／Event 帶有錯誤。
 
 ## 3. Audio 分支：RAW pre-roll → WAV → terminal
 
@@ -113,6 +118,8 @@ stateDiagram-v2
     Damaged --> Damaged: 保留 owner / 處理後續 RAW
 
     Recording --> EndCheck: VAD_END / Event 進 WAITING / enqueue END
+    Recording --> EndCheck: 觸發後滿 5 分鐘 / 裁切 RAW / enqueue END
+    Damaged --> EndCheck: 觸發後滿 5 分鐘 / enqueue END / 保留既有錯誤
     Damaged --> EndCheck: VAD_END / enqueue END / 保留既有錯誤
     Recording --> EndCheck: pipeline stop / 強制標記失敗並結束
     Damaged --> EndCheck: pipeline stop / 強制結束
@@ -135,6 +142,24 @@ WAV 保存 **pre-DSP RAW PDM capture，16 kHz / mono / PCM16**，路徑為 `/sd/
 `EVENT_AUDIO_READY` 是 terminal 訊息名稱，payload 可以是 `READY` **或 `FAILED`**，不包含 audio bytes。
 
 ## 4. Face 分支：request admission
+
+```mermaid
+flowchart TD
+    Open[Event 開始] --> Initial[初始 request]
+    Initial --> Done[保存當輪 FACE_BATCH_END 與所有 faces]
+    Tick[錄音中的 30 秒時間點] --> Gate{Event 未結束且非匯出中?}
+    Gate -->|否| Stop[不新增 request]
+    Gate -->|是| Busy{已有 pending batch 或相機不可用?}
+    Busy -->|是| Skip[跳過本週期，不補排]
+    Busy -->|否| Periodic[新 request，重拍預算歸零]
+    Periodic --> Done
+    Done --> Miss{client NO_FACE 且重拍少於 3 次?}
+    Miss -->|否| Wait[等待下一個 30 秒時間點或 Event 結束]
+    Miss -->|是且 Event 仍 active| Retry[新 request，完整重拍，保留舊結果]
+    Retry --> Done
+```
+
+下方 admission 圖套用於初始輪；後續週期的 BUSY／不可用直接跳過，不產生 request-0 假輪次。NO_FACE 重拍等待相機可用，但 VAD_END、5 分鐘上限或匯出 gate 後不再新增 Event request。任何早期輪次失敗仍使最終 Event 為 COMPLETE_WITH_ERROR；最後一輪成功不會清除歷史。
 
 ```mermaid
 stateDiagram-v2
@@ -162,7 +187,7 @@ stateDiagram-v2
     FAILED --> [*]: FACE_BATCH_END
 ```
 
-未接受 camera request 時，`request_id = 0`，仍發布 Event lifecycle 並繼續錄音。`BUSY` 直接結束該 Event 的 face 分支，不做 deferred capture。GPIO／BLE manual capture 共用 camera arbitration，但不建立 audio Event。
+未接受 camera request 時，`request_id = 0`，仍發布 Event lifecycle 並繼續錄音。`BUSY` 結束初始輪的 face 分支；後續 30 秒輪次仍可嘗試，忙碌的週期不補排。GPIO／BLE manual capture 共用 camera arbitration，但不建立 audio Event。
 
 controller 必須在 Event-owned camera work 前成功發送 `EVENT_OPEN`，讓 PC 先建立 association。EventManager 也會發布相同的 OPEN；PC 以 idempotent 方式接受相同內容。
 
@@ -238,7 +263,7 @@ stateDiagram-v2
     state "已收到兩個 device branch terminals" as TerminalsReceived
     state "PC 已保存完成 Event" as StoredComplete
 
-    Receiving --> Receiving: EVENT_OPEN / 建立或補齊 request mapping
+    Receiving --> Receiving: EVENT_OPEN / 建立或補齊該 request 的 batch mapping
     Receiving --> Receiving: image / recognition 保存後才嘗試 BLE 回傳
     Receiving --> Receiving: 一個 branch terminal / 設定對應 received flag
     Receiving --> Receiving: BLE disconnect / 保存觀察與既有結果
@@ -264,10 +289,10 @@ PC 會拒絕 conflicting duplicate、跨 Event／boot-session 的 ownership、st
 
 | 發生點 | BLE lifecycle | SD／PC 保存 |
 |---|---|---|
-| 接受 VAD Event／face request mapping | `EVENT_OPEN` | SD `event_lifecycle.csv` 的 OPEN；PC `events` |
+| 接受 VAD Event／face request mapping | `EVENT_OPEN` | SD lifecycle OPEN／FACE_BATCH_OPEN；PC `events` 與 `event_batches` |
 | 單張有效 recognition 回覆 | PC → ESP `RECOGNITION_RESULT` | SD `face_associations.csv`；PC `event_faces`，另追蹤 `result_sent` |
 | Audio terminal | `EVENT_AUDIO_READY`，status 為 READY 或 FAILED | WAV、`audio_events.csv`、lifecycle AUDIO_READY；PC audio status／sample boundaries |
-| Face batch terminal | `FACE_BATCH_END` | face associations 的 terminal sentinel 與 lifecycle FACE_BATCH_END；PC batch status／counts |
+| Face batch terminal | `FACE_BATCH_END` | face associations 的 terminal sentinel 與 lifecycle FACE_BATCH_END；PC `event_batches` 各輪 status／counts |
 | Audio + Face 都 terminal | `EVENT_COMPLETE`，含最終 Event／audio／face status | lifecycle COMPLETE；PC `event_status` 與 `completed_at` |
 
 Face terminal sentinel 的 `image_id = 0`、`face_index = -1`，不是一張臉。BLE lifecycle 發送失敗會記錄 protocol failure，但不阻止本地 Event 狀態完成與 slot 釋放；SD metadata 入列／寫入失敗也會另外計數與記錄，不能假設每次完成都留下完整的外部證據。

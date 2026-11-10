@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### 2026-11-11 - Bounded Events, recurring recognition and SD deletion
+
+- Retained VADNet MODE_0 and the one-second non-speech setting; bounded audio to five minutes from the trigger, with pre-roll additional and rearming after non-speech.
+- Added initial/every-30-second recognition while an Event is active, skipping busy slots without queueing. All admitted requests and faces remain associated with one Event/WAV.
+- Added distinct receiver NO_FACE handling and up to three fresh full-batch recaptures per round (also bounded for manual captures); UNKNOWN does not retry.
+- Normalized PC history into `event_batches`, migrated existing databases without discarding faces, and updated Swift reference types and the SD inspector for multiple requests per Event.
+- Added explicit authenticated single-file HTTP DELETE, current-session If-Match, manifest invalidation, Swift `deleteFiles(paths:)`, and feature bits `EVENT_MULTI_BATCH=0x80` / `SD_FILE_DELETE=0x100`. Wire header and existing payload sizes remain protocol v2.
+- Updated contracts, diagrams, examples and acceptance tests. Hardware/iPhone acceptance must be recorded separately from host checks.
+
 ### 2026-11-02 - Flash/monitor runtime fixes
 
 - Fixed integrated-app startup allocation failures by moving NimBLE host pools to PSRAM and disabling Wi-Fi IRAM acceleration in the app profile.

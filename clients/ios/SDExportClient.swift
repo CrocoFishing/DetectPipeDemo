@@ -8,6 +8,7 @@ public enum SDExportClientError: Error {
     case invalidConnectionInfo, invalidManifest(String), unsafePath(String)
     case http(Int), invalidResponse, checksum(String), device(UInt16)
     case alreadyRunning, foregroundRequired
+    case partialDeletion(deletedPaths: [String], reason: String)
 }
 
 /// This value contains session credentials. Keep it in memory; never log it.
@@ -56,6 +57,11 @@ public struct SDExportResult: Sendable {
     public let totalBytes: UInt64
     /// False means the data was acknowledged, but final audio restoration could
     /// not be confirmed over BLE. Do not display "recording resumed" in that case.
+    public let deviceRestored: Bool
+}
+
+public struct SDFileDeletionResult: Sendable {
+    public let deletedPaths: [String]
     public let deviceRestored: Bool
 }
 
@@ -202,6 +208,39 @@ actor SDExportHTTPClient {
     }
 
     func invalidate() { session.invalidateAndCancel(); controlSession.invalidateAndCancel() }
+
+    func deleteFiles(paths: [String]) async throws -> [String] {
+        for path in paths { try SDExportPaths.validate(path) }
+        guard Set(paths).count == paths.count else { throw SDExportClientError.unsafePath("duplicate paths") }
+        let temporary = fm.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".ndjson")
+        defer { try? fm.removeItem(at: temporary) }
+        let manifest = try await fetchManifest(to: temporary, progress: { _ in })
+        let byPath = Dictionary(uniqueKeysWithValues: manifest.files.map { ($0.path, $0) })
+        guard paths.allSatisfy({ byPath[$0] != nil }) else { throw SDExportClientError.unsafePath("file not in current manifest") }
+        var deleted: [String] = []
+        do {
+            for path in paths {
+                try Task.checkCancellation()
+                guard let file = byPath[path] else { throw SDExportClientError.invalidResponse }
+                var deletion = request("file", query: [URLQueryItem(name: "path", value: path)])
+                deletion.httpMethod = "DELETE"
+                deletion.setValue(file.etag, forHTTPHeaderField: "If-Match")
+                let (data, response) = try await controlSession.data(for: deletion)
+                try Self.requireHTTP(response, code: 200)
+                struct Receipt: Decodable { let deleted: Bool; let path: String; let manifest_invalidated: Bool }
+                let receipt = try JSONDecoder().decode(Receipt.self, from: data)
+                guard receipt.deleted, receipt.path == path, receipt.manifest_invalidated else {
+                    throw SDExportClientError.invalidResponse
+                }
+                deleted.append(path)
+            }
+        } catch {
+            // A lost HTTP response leaves that last file's outcome uncertain.
+            // Never claim atomic deletion or silently delete additional files.
+            throw SDExportClientError.partialDeletion(deletedPaths: deleted, reason: String(describing: error))
+        }
+        return deleted
+    }
 
     func keepAlive() async throws {
         let (data, response) = try await controlSession.data(for: request("status"))
@@ -435,6 +474,69 @@ public final class SDExportCoordinator {
     private let link: SDExportBLELink
     private var running = false
     public init(link: SDExportBLELink) { self.link = link }
+
+    /// Explicit deletion only. exportAll never deletes source files.
+    public func deleteFiles(paths: [String]) async throws -> SDFileDeletionResult {
+        guard !running else { throw SDExportClientError.alreadyRunning }
+        guard UIApplication.shared.applicationState == .active else { throw SDExportClientError.foregroundRequired }
+        for path in paths { try SDExportPaths.validate(path) }
+        guard !paths.isEmpty, Set(paths).count == paths.count else {
+            throw SDExportClientError.unsafePath("empty or duplicate paths")
+        }
+        running = true
+        defer { running = false }
+        var sessionID: UInt64 = 0
+        var ssid: String?
+        var client: SDExportHTTPClient?
+        var confirmedDeleted: [String] = []
+        do {
+            try await link.requireFileDeletion()
+            let ready = try await link.beginExport()
+            sessionID = ready.sessionID
+            let info = try await link.readConnectionInfo(sessionID: sessionID)
+            ssid = info.ssid
+            try await join(info)
+            let http = SDExportHTTPClient(info: info)
+            client = http
+            for attempt in 0..<3 {
+                do { try await http.keepAlive(); break }
+                catch let error as URLError where error.code != .cancelled && attempt < 2 {
+                    try await Task.sleep(nanoseconds: 1_000_000_000)
+                }
+            }
+            let deleted = try await http.deleteFiles(paths: paths)
+            confirmedDeleted = deleted
+            // Closing a management-only session uses CANCEL, not an export receipt.
+            try await link.cancelExport(sessionID: sessionID)
+            var restored = false
+            let deadline = Date().addingTimeInterval(20)
+            while Date() < deadline {
+                try Task.checkCancellation()
+                do {
+                    let status = try await link.queryStatus(sessionID: sessionID)
+                    guard status.sessionID == sessionID else { break }
+                    if status.state == .cancelled { restored = true; break }
+                    if status.state == .failed { throw SDExportClientError.device(status.error.rawValue) }
+                } catch SDExportClientError.bleDisconnected { break }
+                catch SDExportClientError.bleTimeout { }
+                try await Task.sleep(nanoseconds: 1_000_000_000)
+            }
+            await http.invalidate()
+            NEHotspotConfigurationManager.shared.removeConfiguration(forSSID: info.ssid)
+            return SDFileDeletionResult(deletedPaths: deleted, deviceRestored: restored)
+        } catch {
+            if let client { await client.invalidate() }
+            let active = sessionID != 0 ? sessionID : link.ownedSessionID
+            if active != 0 {
+                await Task { @MainActor in try? await self.link.cancelExport(sessionID: active) }.value
+            }
+            if let ssid { NEHotspotConfigurationManager.shared.removeConfiguration(forSSID: ssid) }
+            if !confirmedDeleted.isEmpty {
+                throw SDExportClientError.partialDeletion(deletedPaths: confirmedDeleted, reason: String(describing: error))
+            }
+            throw error
+        }
+    }
 
     public func exportAll(to directory: URL,
                           progress: @escaping @Sendable (SDExportProgress) -> Void = { _ in }) async throws -> SDExportResult {

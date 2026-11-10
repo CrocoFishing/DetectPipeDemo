@@ -28,6 +28,12 @@ Start `python -m pc_client --event-database event_store.db run --wait-only`. Cap
 | E1-12 |100 repeated mixed Events | unique IDs, complete pairing, no crossed request/image/face metadata | NOT RUN |
 | E1-13 | SD stall/error/full/unmounted | explicit audio/metadata failures; camera results retained; capture stays active | NOT RUN |
 | E1-14 | reboot with NVS preserved | boot session increases; Event IDs never collide; PC accepts reset request/image counters | NOT RUN |
+| E1-15 | background speech keeps VAD SPEECH for over five minutes | MODE_0; max_duration log at trigger sample +4800000; one recorder terminal and finalized WAV/CSV; pre-roll additional; no repeated Events until non-speech then a fresh utterance; normal limit alone is not FAILED | NOT RUN |
+| E1-16 | long Event with successful face results | initial/30/60/.../270 s slots, fresh request/image IDs, same Event/WAV, no new request at 300 s; one Event completion after final in-flight result | NOT RUN |
+| E1-17 | recognition takes longer than 30 s / camera busy | skip busy periodic slots, no backlog or overlapping capture; audio remains continuous | NOT RUN |
+| E1-18 | receiver NO_FACE then success / persistent NO_FACE | finish current faces, retain all attempts, at most 3 new full-batch requests per scheduled round; UNKNOWN/generic FAILED do not retry | NOT RUN |
+| E1-19 | end/export/disconnect during retries | stop new Event batches, drain admitted work; stale old request/image results cannot complete a replacement batch; previous results remain | NOT RUN |
+| E1-20 | manual receiver NO_FACE | initial plus at most 3 recaptures, generated request IDs announced by CAPTURE_ACCEPTED, returns IDLE and retains original camera fallback | NOT RUN |
 
 Also exercise short/long utterances, ring wrap, back-to-back audio while SD is slow, both branch completion orders, GPIO/BLE manual requests with no audio Event, and MTU below67 with explicit readiness error.
 

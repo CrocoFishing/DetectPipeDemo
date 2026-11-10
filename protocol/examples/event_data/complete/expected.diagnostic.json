@@ -67,6 +67,37 @@
         "processing_time_ms": "48"
       }
     ],
+    "face_batches": [
+      {
+        "request_id": 2147483650,
+        "faces": [
+          {
+            "event_id": "0000002500000068",
+            "request_id": "2147483650",
+            "image_id": "1",
+            "face_index": "0",
+            "face_count": "2",
+            "status": "RECOGNIZED",
+            "person_id": "P,\"01",
+            "similarity": "0.710000",
+            "processing_time_ms": "52"
+          },
+          {
+            "event_id": "0000002500000068",
+            "request_id": "2147483650",
+            "image_id": "2",
+            "face_index": "1",
+            "face_count": "2",
+            "status": "UNKNOWN",
+            "person_id": "",
+            "similarity": "0.310000",
+            "processing_time_ms": "48"
+          }
+        ],
+        "status": "COMPLETED",
+        "expected_face_count": 2
+      }
+    ],
     "request_id": 2147483650,
     "batch_terminal_status": "COMPLETED",
     "face_status": "COMPLETED",

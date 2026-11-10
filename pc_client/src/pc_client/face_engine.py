@@ -12,6 +12,10 @@ class FaceCountError(ValueError):
     pass
 
 
+class NoFaceError(FaceCountError):
+    """A decodable crop contains no face according to the receiver's model."""
+
+
 class InsightFaceEngine:
     def __init__(self, model_name: str = "buffalo_l", providers: list[str] | None = None) -> None:
         self.model_name = model_name
@@ -38,7 +42,7 @@ class InsightFaceEngine:
     def embedding_from_bytes(self, data: bytes, *, allow_largest: bool = False) -> npt.NDArray[np.float32]:
         faces = self._app.get(self.decode(data))
         if not faces:
-            raise FaceCountError("InsightFace found no face")
+            raise NoFaceError("InsightFace found no face")
         if len(faces) != 1 and not allow_largest:
             raise FaceCountError(f"InsightFace found {len(faces)} faces; expected exactly one")
         face = max(

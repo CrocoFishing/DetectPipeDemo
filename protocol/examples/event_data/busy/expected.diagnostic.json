@@ -44,6 +44,14 @@
       "has_preroll": "True"
     },
     "faces": [],
+    "face_batches": [
+      {
+        "request_id": 0,
+        "faces": [],
+        "status": "BUSY",
+        "expected_face_count": 0
+      }
+    ],
     "batch_terminal_status": "BUSY",
     "face_status": "BUSY",
     "expected_face_count": 0,

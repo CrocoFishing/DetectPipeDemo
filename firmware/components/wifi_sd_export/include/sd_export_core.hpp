@@ -10,6 +10,9 @@ namespace demo::sd_export {
 inline constexpr size_t MAX_PATH_BYTES = 1024;
 inline constexpr size_t MAX_DIRECTORY_DEPTH = 16;
 
+enum class FileKind { Regular, Directory, Missing, Error };
+enum class DeleteResult { Deleted, InvalidPath, MatchRequired, MatchFailed, Missing, NotFile, IoError };
+
 inline int hex_digit(char c) {
     if (c >= '0' && c <= '9') return c - '0';
     if (c >= 'a' && c <= 'f') return c - 'a' + 10;
@@ -72,6 +75,23 @@ inline bool decode_path(std::string_view encoded, std::string& decoded) {
         if (decoded.size() > MAX_PATH_BYTES) return false;
     }
     return valid_relative_path(decoded);
+}
+
+// The caller already owns a paused/authenticated SD session. Keep the destructive
+// operation behind path, precondition and regular-file checks, in that order.
+template <typename Inspect, typename Remove>
+DeleteResult delete_regular_file(std::string_view path, std::string_view if_match,
+                                 std::string_view current_etag, Inspect inspect, Remove remove) {
+    if (!valid_relative_path(path)) return DeleteResult::InvalidPath;
+    if (if_match.empty()) return DeleteResult::MatchRequired;
+    if (if_match != current_etag) return DeleteResult::MatchFailed;
+    switch (inspect()) {
+        case FileKind::Missing: return DeleteResult::Missing;
+        case FileKind::Directory: return DeleteResult::NotFile;
+        case FileKind::Error: return DeleteResult::IoError;
+        case FileKind::Regular: break;
+    }
+    return remove() ? DeleteResult::Deleted : DeleteResult::IoError;
 }
 
 inline std::string json_string(std::string_view value) {

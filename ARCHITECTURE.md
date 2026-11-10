@@ -2,6 +2,10 @@
 
 ## Data ownership and control flow
 
+EventManager owns one audio recording and a sequence of face batches per Event. It submits an initial request and fixed 30-second slots while VAD remains active; a pending request or unavailable camera/client causes that periodic slot to be skipped. Receiver NO_FACE queues at most three retries per slot, each a new full capture/request under the same Event. No new Event batch is admitted after VAD_END, the five-minute cap, or export admission gating. Completion waits for audio and the last admitted batch, preserving earlier results and errors. Firmware stores bounded counters/current request; SD and PC `event_batches` retain history. See [Event state diagrams](docs/EVENT_STATE_DIAGRAM.md).
+
+The Wi-Fi service exclusively owns SD access after the recorder barrier. Authenticated HTTP DELETE removes one validated regular file and invalidates the manifest; GET/download and completion receipts do not delete anything. Recording resumes only after the management session closes.
+
 ```text
 GPIO2 ISR ─notify─> TriggerService task ─CaptureRequest(value)─> queue(length 1)
 BLE write ─copy─> BLE RX queue ─same TriggerService arbitration─┘
