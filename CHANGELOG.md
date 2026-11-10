@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### 2026-11-11 - SD export memory pressure and HTTP shutdown
+
+- Moved the integrated export HTTP task's 8 KiB stack to PSRAM and enabled PSRAM-preferred Wi-Fi/lwIP allocations, with four static TX buffers and eight cached TX buffers.
+- Retain the HTTP handle, SD snapshot and I/O buffer when `httpd_stop()` fails; report RESTORING/INTERNAL and retry before resuming audio or allowing another export.
+- Added startup/read-failure internal/DMA heap diagnostics and explicit rejection of short snapshot reads. Production-service host tests inject repeated HTTP shutdown failures, recovery and short/error SD reads. Physical-board transfer/endurance acceptance remains pending.
+
 ### 2026-11-11 - Bounded Events, recurring recognition and SD deletion
 
 - Retained VADNet MODE_0 and the one-second non-speech setting; bounded audio to five minutes from the trigger, with pre-roll additional and rearming after non-speech.

@@ -9,7 +9,7 @@ Use the integrated `event1_audio_face` image and an iPhone running iOS 16 or lat
 ## Setup
 
 1. Confirm the existing camera/audio Event acceptance setup and WAV/CSV reconstruction first.
-2. Verify effective sdkconfig matches the integrated app defaults, including UTF-8 FatFS, Wi-Fi core 1/software coexistence, NimBLE external host allocation, disabled Wi-Fi IRAM acceleration, bounded radio buffers and 16 KiB camera staging DMA. Existing saved sdkconfig choices can override new defaults.
+2. Verify effective sdkconfig matches the integrated app defaults, including UTF-8 FatFS, Wi-Fi core 1/software coexistence, NimBLE external host allocation, disabled Wi-Fi IRAM acceleration, bounded radio buffers and 16 KiB camera staging DMA. Confirm `CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y`, four static Wi-Fi TX buffers, eight cached TX buffers and `CONFIG_FREERTOS_TASK_CREATE_ALLOW_EXT_MEM=y` for the export HTTP stack. Existing saved sdkconfig choices can override new defaults.
 3. Build/flash with `tools/idf.ps1 -App event1_audio_face`. Add the iOS Swift package to a signed iOS host and configure the permissions/entitlement described in `docs/IOS_SD_EXPORT.md`.
 4. Prepare a card containing multiple complete Events, an incomplete Event, zero-byte/extra/hidden files, nested directories, spaces, `+`, `%`, `&` and Chinese names. Keep an independent path/size/SHA-256 inventory for comparison.
 
@@ -39,6 +39,7 @@ Use the integrated `event1_audio_face` image and an iPhone running iOS 16 or lat
 | Repeated/old session commands | Wrong session rejected; repeated completion/cancel/query behaves consistently. |
 | Existing iPhone firmware upgrade | Service Changed/rediscovery refreshes cached characteristics; existing capture UUIDs work. |
 | Audio restart allocation failure | Error remains visible over BLE, admission stays gated; cancel retries restoration. |
+| HTTP shutdown failure | RESTORING/INTERNAL remains visible; server handle, I/O buffer and snapshot remain owned; retry stops HTTP before audio resumes. No subsequent listener conflict or duplicate release. |
 | Reboot during export | Old session/token invalid; SD remains readable and incomplete Events remain identifiable. |
 
 ## Resource and recovery acceptance

@@ -35,6 +35,16 @@ using protocol::MessageType;
 using protocol::SdExportState;
 using protocol::SdExportStatusPayload;
 
+void log_memory(const char* phase) {
+    const uint32_t internal = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
+    const uint32_t dma = MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA;
+    ESP_LOGI(TAG, "heap phase=%s internal_free=%u internal_largest=%u dma_free=%u dma_largest=%u",
+        phase, static_cast<unsigned>(heap_caps_get_free_size(internal)),
+        static_cast<unsigned>(heap_caps_get_largest_free_block(internal)),
+        static_cast<unsigned>(heap_caps_get_free_size(dma)),
+        static_cast<unsigned>(heap_caps_get_largest_free_block(dma)));
+}
+
 std::string hex_bytes(const uint8_t* bytes, size_t length) {
     constexpr char alphabet[] = "0123456789abcdef";
     std::string result(length * 2, '0');
@@ -117,6 +127,9 @@ struct WifiSdExportService::State {
     std::atomic<uint16_t> fatal_error{0};
     std::atomic<int> active_socket{-1};
     bool preparation_attempted{false}, resume_pending{false};
+    bool network_stop_pending{false};
+    SdExportState pending_terminal{SdExportState::Failed};
+    ErrorCode pending_error{ErrorCode::None};
     bool wifi_initialized{false}, wifi_started{false};
     esp_netif_t* netif{nullptr};
     httpd_handle_t server{nullptr};
@@ -220,10 +233,20 @@ struct WifiSdExportService::State {
         if (!io_buffer) return ESP_ERR_NO_MEM;
         httpd_config_t http = HTTPD_DEFAULT_CONFIG();
         http.stack_size = 8192; http.max_open_sockets = 2;
+#if defined(CONFIG_SPIRAM) && defined(CONFIG_FREERTOS_TASK_CREATE_ALLOW_EXT_MEM)
+        // This task only serves the paused SD snapshot; it never writes flash.
+        // Keep its stack (including the FatFS FIL sector cache) out of the
+        // fragmented internal heap needed by SD's DMA bounce allocations.
+        http.task_caps = MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT;
+#endif
         http.max_uri_handlers = 5; http.max_uri_len = sd_export::MAX_PATH_BYTES * 3 + 128;
         http.max_req_hdr_len = 1024; http.recv_wait_timeout = 2; http.send_wait_timeout = 2;
         http.lru_purge_enable = true;
-        if ((error = httpd_start(&server, &http)) != ESP_OK) return error;
+        if ((error = httpd_start(&server, &http)) != ESP_OK) {
+            ESP_LOGE(TAG, "HTTP start failed: %s", esp_err_to_name(error));
+            log_memory("http_start_failed");
+            return error;
+        }
         struct Route { const char* uri; httpd_method_t method; };
         constexpr Route routes[] = {{"/v1/export/status", HTTP_GET}, {"/v1/export/manifest", HTTP_GET},
             {"/v1/export/file", HTTP_GET}, {"/v1/export/file", HTTP_DELETE}, {"/v1/export/complete", HTTP_POST}};
@@ -233,24 +256,46 @@ struct WifiSdExportService::State {
             handler.handler = handle_request; handler.user_ctx = this;
             if ((error = httpd_register_uri_handler(server, &handler)) != ESP_OK) return error;
         }
+        log_memory("network_ready");
         return ESP_OK;
     }
-    void stop_network() {
+    esp_err_t stop_network() {
         stop_readers.store(true);
         int fd = active_socket.load();
         if (fd >= 0) shutdown(fd, SHUT_RDWR);
         // Joining the synchronous HTTP worker closes every FILE/DIR before the
         // recorder is resumed. Readers must never survive snapshot ownership.
-        if (server) { httpd_stop(server); server = nullptr; }
+        if (server) {
+            const esp_err_t error = httpd_stop(server);
+            // A failed shutdown still owns its socket, handlers and SD reader.
+            // Retain the handle/buffer and retry before restoring recording.
+            if (error != ESP_OK) return error;
+            server = nullptr;
+        }
         active_socket.store(-1);
         if (wifi_started) { (void)esp_wifi_stop(); wifi_started = false; }
         if (wifi_initialized) { (void)esp_wifi_deinit(); wifi_initialized = false; }
         if (netif) { esp_netif_destroy_default_wifi(netif); netif = nullptr; }
         heap_caps_free(io_buffer); io_buffer = nullptr;
+        return ESP_OK;
     }
     void cleanup(SdExportState terminal, ErrorCode error) {
-        change(SdExportState::Restoring, error); announce();
-        stop_network();
+        if (!network_stop_pending) {
+            pending_terminal = terminal; pending_error = error;
+            change(SdExportState::Restoring, error); announce();
+        }
+        const esp_err_t stopped = stop_network();
+        if (stopped != ESP_OK) {
+            if (!network_stop_pending) {
+                ESP_LOGE(TAG, "HTTP stop failed: %s; retaining snapshot until retry", esp_err_to_name(stopped));
+                log_memory("http_stop_failed");
+                change(SdExportState::Restoring, ErrorCode::Internal); announce();
+            }
+            network_stop_pending = true;
+            return;
+        }
+        network_stop_pending = false;
+        terminal = pending_terminal; error = pending_error;
         if (preparation_attempted) {
             resume_pending = hooks.resume(hooks.context) != ESP_OK;
             if (resume_pending) { terminal = SdExportState::Failed; error = ErrorCode::AudioResumeFailed; }
@@ -291,7 +336,11 @@ struct WifiSdExportService::State {
         uint8_t random[32]; esp_fill_random(random, sizeof(random)); token = hex_bytes(random, sizeof(random));
         esp_fill_random(random, sizeof(random)); passphrase = hex_bytes(random, 12);
         ssid = "EventPipe-" + hex_bytes(random + 12, 4);
-        if (start_network() != ESP_OK) { cleanup(SdExportState::Failed, ErrorCode::WifiStartFailed); return; }
+        if ((error = start_network()) != ESP_OK) {
+            ESP_LOGE(TAG, "network start failed: %s", esp_err_to_name(error));
+            log_memory("network_start_failed");
+            cleanup(SdExportState::Failed, ErrorCode::WifiStartFailed); return;
+        }
         if (cancel_requested.load()) { cleanup(SdExportState::Cancelled, ErrorCode::None); return; }
         const std::string json = "{\"format_version\":1,\"session_id\":" +
             sd_export::json_string(session_text(id)) + ",\"ssid\":" + sd_export::json_string(ssid) +
@@ -329,6 +378,10 @@ struct WifiSdExportService::State {
             Command command{};
             if (xQueueReceive(commands, &command, pdMS_TO_TICKS(100)) == pdTRUE) process(command);
             announce();
+            if (network_stop_pending) {
+                cleanup(pending_terminal, pending_error);
+                continue;
+            }
             auto current = snapshot();
             if (current.state != SdExportState::Ready && current.state != SdExportState::Transferring) continue;
             if (cancel_requested.load()) { cleanup(SdExportState::Cancelled, ErrorCode::None); continue; }
@@ -369,6 +422,15 @@ struct WifiSdExportService::State {
         if (interrupted() || httpd_resp_send_chunk(request, text.data(), static_cast<ssize_t>(text.size())) != ESP_OK) return false;
         activity(); return true;
     }
+    bool read_file(FIL& source, size_t wanted, UINT& count) {
+        const FRESULT result = f_read(&source, io_buffer, static_cast<UINT>(wanted), &count);
+        if (result == FR_OK && count == wanted) return true;
+        ESP_LOGE(TAG, "SD read failed: fatfs=%u requested=%u received=%u",
+            static_cast<unsigned>(result), static_cast<unsigned>(wanted), static_cast<unsigned>(count));
+        log_memory("sd_read_failed");
+        fail(ErrorCode::SdIo);
+        return false;
+    }
     bool hash_file(httpd_req_t* request, const std::string& path, uint64_t size, std::string& digest) {
         FileCloser file;
         if (f_open(&file.value, native_path(path).c_str(), FA_READ) != FR_OK) { fail(ErrorCode::SdIo); return false; }
@@ -379,8 +441,8 @@ struct WifiSdExportService::State {
             if (interrupted()) return false;
             const size_t wanted = static_cast<size_t>(size - read > IO_BUFFER_SIZE ? IO_BUFFER_SIZE : size - read);
             UINT bytes = 0;
-            if (f_read(&file.value, io_buffer, static_cast<UINT>(wanted), &bytes) != FR_OK ||
-                !bytes || !hash.update(io_buffer, bytes)) { fail(ErrorCode::SdIo); return false; }
+            if (!read_file(file.value, wanted, bytes)) return false;
+            if (!hash.update(io_buffer, bytes)) { fail(ErrorCode::Internal); return false; }
             read += bytes; activity();
             int64_t now = esp_timer_get_time();
             if (now - progress_at >= PROGRESS_INTERVAL_US) {
@@ -569,9 +631,7 @@ struct WifiSdExportService::State {
             if (interrupted()) return ESP_FAIL;
             size_t wanted = static_cast<size_t>(remaining > IO_BUFFER_SIZE ? IO_BUFFER_SIZE : remaining);
             UINT count = 0;
-            if (f_read(&source.value, io_buffer, static_cast<UINT>(wanted), &count) != FR_OK || !count) {
-                fail(ErrorCode::SdIo); return ESP_FAIL;
-            }
+            if (!read_file(source.value, wanted, count)) return ESP_FAIL;
             if (httpd_resp_send_chunk(request, reinterpret_cast<char*>(io_buffer), static_cast<ssize_t>(count)) != ESP_OK) return ESP_FAIL;
             remaining -= count; activity(); taskYIELD();
         }
