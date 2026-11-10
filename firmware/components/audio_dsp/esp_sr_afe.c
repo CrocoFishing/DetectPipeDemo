@@ -188,7 +188,7 @@ esp_err_t esp_sr_afe_init(const esp_sr_afe_config_t *config)
     afe_config->agc_compression_gain_db = config->agc_compression_gain_db;
     afe_config->vad_init = config->enable_vad;
     afe_config->vad_model_name = vad_model_name;
-    afe_config->vad_mode = VAD_MODE_1;
+    afe_config->vad_mode = VAD_MODE_0;
     afe_config->vad_min_speech_ms = 128;
     afe_config->vad_min_noise_ms = 5000;
     afe_config->vad_delay_ms = 128;
